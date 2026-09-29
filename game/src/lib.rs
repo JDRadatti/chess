@@ -3,6 +3,7 @@ mod attacks;
 use attacks::*;
 
 use std::fmt::{self, Display, Formatter};
+use std::str::FromStr;
 
 const SQUARE_CNT: usize = 64;
 const MAX_HALFMOVE_CNT: u8 = 75;
@@ -72,7 +73,7 @@ const FILE_F: u8 = 0b111;
 
 // Error
 
-enum Error {
+pub enum Error {
     InvalidFenString(String),
     InvalidMove,
 }
@@ -112,27 +113,33 @@ impl Display for Error {
 ///     Byte 33:  [active_player:1][halfmove_cnt:7]
 ///     Byte 34:  [fullmove_cnt:8]
 #[derive(Debug)]
-struct Fen([u8; 35]);
+pub struct Fen([u8; 35]);
 
 impl Fen {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
-    // what do we need to know for each move]
-    //
-    // 1. all valid moves of opponent (or, more specifically, do any attack the king, and if we move
-    //    this piece, do any attack the king now)
-    // 3. piece on this square
-    // 4. Current opponent (to match against piece and find opponent moves)
-    // 5. Can we en passant, and if so, which square
-    // 6. Are we upgrading?
-    // 7. Are we castling, can we castle?
-    // 8. A piece on this square can move to these squares
-    // 2. all possilbe moves
-    fn try_move(m: Move) -> Result<(), Error> {
-        Ok(())
-        //
+    pub fn try_move(&mut self, m: Move) -> Result<(), Error> {
+        let src = Square(m.src());
+        let dst = Square(m.dst());
+        let piece = m.dst() & 0b0111;
+        for candidate_move in self.all_valid_moves_from_square(src) {
+            if m == candidate_move {
+                // Execute move
+                self.set_square(src, EMPTY);
+                self.set_square(dst, piece);
+                // what if a castle 
+                // what if this move removes a castle
+                // what if this move is a promotion
+                // what if this piece is an en passant (nned ot change differnet square )
+                // need to update has_en_passant
+                // need to update active player
+                // need to update halfmove/fullmove_cnt
+                return Ok(());
+            }
+        }
+        Err(Error::InvalidMove)
     }
 
     fn all_valid_moves(&self) -> Vec<Move> {
@@ -289,6 +296,8 @@ impl Fen {
         false
     }
 
+    // NOTE: will probably need to optimize this. 
+    // Max number of moves is 218
     fn all_valid_moves_from_square(&self, s: Square) -> Vec<Move> {
         let mut moves = Vec::with_capacity(8);
         let active_player = self.active_player_bit();
@@ -603,8 +612,8 @@ impl Default for Fen {
 ///
 /// Technically, only 1,968 possible moves, which could take up 11 bits.
 ///
-#[derive(Clone, Copy)]
-struct Move(u16);
+#[derive(Clone, Copy, PartialEq)]
+pub struct Move(u16);
 
 impl Move {
     /// Create a new move.
@@ -628,6 +637,58 @@ impl Move {
     }
 }
 
+fn parse_square(file_ch: u8, rank_ch: u8) -> Result<u8, &'static str> {
+    if file_ch < b'a' || file_ch > b'h' {
+        return Err("file must be a-h");
+    }
+    if rank_ch < b'1' || rank_ch > b'8' {
+        return Err("rank must be 1-8");
+    }
+    let file = file_ch - b'a';
+    let rank = rank_ch - b'1';
+    Ok((7 - rank) * 8 + file)
+}
+
+fn parse_promo(ch: u8) -> Result<u8, &'static str> {
+    match ch {
+        b'q' => Ok(QUEEN_TYPE),
+        b'r' => Ok(ROOK_TYPE),
+        b'b' => Ok(BISHOP_TYPE),
+        b'n' => Ok(KNIGHT_TYPE),
+        _ => Err("promotion piece must be q, r, b, or n"),
+    }
+}
+
+impl FromStr for Move {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bytes = s.as_bytes();
+
+        // "src-dst" = 5 chars, "src-dst-promo" = 7 chars
+        if bytes.len() != 5 && bytes.len() != 7 {
+            return Err("expected format: src-dst (e.g. e2e4) or src-dst-promo (e.g. e7e8q)");
+        }
+        if bytes[2] != b'-' {
+            return Err("expected '-' between src and dst");
+        }
+        if bytes.len() == 7 && bytes[5] != b'-' {
+            return Err("expected '-' before promotion piece");
+        }
+
+        let src = parse_square(bytes[0], bytes[1])?;
+        let dst = parse_square(bytes[3], bytes[4])?;
+
+        let promo = if bytes.len() == 7 {
+            parse_promo(bytes[6])?
+        } else {
+            0
+        };
+
+        Ok(Move::new(promo, src, dst))
+    }
+}
+
 /// Represents a square on an 8x8 board.
 ///
 /// (a8, 0), b8, c8, d8, e8, f8, g8, (h8, 7)
@@ -643,10 +704,6 @@ struct Square(u8);
 // TESTING
 //
 
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
 fn print_memory_representation<T: std::fmt::Debug>(t: T) {
     print!("type={} value={t:?}: ", std::any::type_name::<T>());
     let start = &t as *const _ as *const u8;
@@ -659,12 +716,6 @@ fn print_memory_representation<T: std::fmt::Debug>(t: T) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
 
     #[test]
     fn check_size() {
@@ -841,4 +892,47 @@ mod tests {
         assert_eq!(m2.dst(), 36);
         assert_eq!(m2.promo(), QUEEN_TYPE);
     }
+
+    #[test]
+    fn move_parse_simple() {
+        let m: Move = "e2-e4".parse().unwrap();
+        assert_eq!(m.src(), 52); // e2
+        assert_eq!(m.dst(), 36); // e4
+        assert_eq!(m.promo(), 0);
+    }
+
+    #[test]
+    fn move_parse_with_promo() {
+        let m: Move = "e7-e8-q".parse().unwrap();
+        assert_eq!(m.src(), 12); // e7
+        assert_eq!(m.dst(), 4);  // e8
+        assert_eq!(m.promo(), QUEEN_TYPE);
+
+        let m2: Move = "a7-a8-n".parse().unwrap();
+        assert_eq!(m2.src(), 8);  // a7
+        assert_eq!(m2.dst(), 0);  // a8
+        assert_eq!(m2.promo(), KNIGHT_TYPE);
+    }
+
+    #[test]
+    fn move_parse_corners() {
+        let m: Move = "a8-h1".parse().unwrap();
+        assert_eq!(m.src(), 0);  // a8
+        assert_eq!(m.dst(), 63); // h1
+
+        let m2: Move = "h1-a8".parse().unwrap();
+        assert_eq!(m2.src(), 63); // h1
+        assert_eq!(m2.dst(), 0);  // a8
+    }
+
+    #[test]
+    fn move_parse_errors() {
+        assert!("e2e4".parse::<Move>().is_err());       // missing dashes
+        assert!("e2e4e".parse::<Move>().is_err());       // too long
+        assert!("e2".parse::<Move>().is_err());           // too short
+        assert!("i2-e4".parse::<Move>().is_err());        // invalid file
+        assert!("e9-e4".parse::<Move>().is_err());        // invalid rank
+        assert!("e7-e8-x".parse::<Move>().is_err());      // invalid promo
+    }
+
 }
