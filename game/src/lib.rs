@@ -1379,15 +1379,18 @@ impl Move {
         Self((promo_type as u16) | (src as u16) << 4 | (dst as u16) << 10)
     }
 
-    const fn src(self) -> u8 {
+    /// Source square index (0-63).
+    pub const fn src(self) -> u8 {
         ((self.0 >> 4) & 0b00111111) as u8
     }
 
-    const fn dst(self) -> u8 {
+    /// Destination square index (0-63).
+    pub const fn dst(self) -> u8 {
         ((self.0 >> 10) & 0b00111111) as u8
     }
 
-    const fn promo(self) -> u8 {
+    /// Promotion piece type (0 = no promotion).
+    pub const fn promo(self) -> u8 {
         (self.0 & 0b00001111) as u8
     }
 }
@@ -1444,16 +1447,25 @@ impl FromStr for Move {
     }
 }
 
-/// Represents a square on an 8x8 board.
+/// Apply a move to a position, returning the new position.
 ///
-/// (a8, 0), b8, c8, d8, e8, f8, g8, (h8, 7)
-/// ...
-/// (a1, 56), b1, c1, d1, e1, f1, g1, (h1, 63)
+/// Returns `Err(Error::InvalidMove)` if the move is not legal.
+pub fn apply_move(fen: &Fen, m: Move) -> Result<Fen, Error> {
+    let mut new_fen = *fen;
+    new_fen.try_move(m)?;
+    Ok(new_fen)
+}
+
+/// Get all legal moves from a given square.
 ///
-/// Square must be less than 64.
-/// Square >> 1 = Index into Fen.
-#[derive(Clone, Copy)]
-struct Square(u8);
+/// Returns an empty vector if the square is empty or contains an opponent's piece.
+pub fn moves_from_square(fen: &Fen, sq: Square) -> Vec<Move> {
+    fen.all_valid_moves_from_square(sq)
+}
+
+/// A square on the chess board, indexed 0-63 (a8=0, h1=63).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Square(pub u8);
 
 //
 // TESTING
@@ -2259,5 +2271,48 @@ mod tests {
             .unwrap();
         let m = fen.parse_san("O-O").unwrap();
         assert_eq!(fen.to_san(&m), "O-O");
+    }
+
+    #[test]
+    fn public_api_apply_move() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("e4").unwrap();
+        let new_fen = apply_move(&fen, m).unwrap();
+        assert_eq!(
+            new_fen.to_fen(),
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+        );
+    }
+
+    #[test]
+    fn public_api_apply_move_invalid() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        // e2e5 is not a legal move
+        let m = Move::new(0, 12, 28);
+        assert!(apply_move(&fen, m).is_err());
+    }
+
+    #[test]
+    fn public_api_moves_from_square() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        // Knight on b1 (sq 57) has 2 moves: a3 and c3
+        let moves = moves_from_square(&fen, Square(57));
+        assert_eq!(moves.len(), 2);
+    }
+
+    #[test]
+    fn public_api_moves_from_square_empty() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        // Empty square
+        let moves = moves_from_square(&fen, Square(28));
+        assert!(moves.is_empty());
     }
 }
