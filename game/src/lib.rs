@@ -73,6 +73,7 @@ const FILE_F: u8 = 0b111;
 
 // Error
 
+#[derive(Debug)]
 pub enum Error {
     InvalidFenString(String),
     InvalidMove,
@@ -121,21 +122,114 @@ impl Fen {
     }
 
     pub fn try_move(&mut self, m: Move) -> Result<(), Error> {
-        let src = Square(m.src());
-        let dst = Square(m.dst());
-        let piece = m.dst() & 0b0111;
-        for candidate_move in self.all_valid_moves_from_square(src) {
-            if m == candidate_move {
-                // Execute move
-                self.set_square(src, EMPTY);
-                self.set_square(dst, piece);
-                // what if a castle 
-                // what if this move removes a castle
-                // what if this move is a promotion
-                // what if this piece is an en passant (nned ot change differnet square )
-                // need to update has_en_passant
-                // need to update active player
-                // need to update halfmove/fullmove_cnt
+        let src = m.src();
+        let dst = m.dst();
+
+        for candidate in self.all_valid_moves_from_square(Square(src)) {
+            if m == candidate {
+                let piece = self.square_bits(Square(src));
+                let pt = piece_type(piece);
+                let color = piece_color(piece);
+                let active_player = self.active_player_bit();
+                let castle = self.castle_bits();
+                let ep_target = self.en_passant_target(active_player);
+
+                // Determine move characteristics
+                let is_capture = self.square_bits(Square(dst)) != 0
+                    || (pt == PAWN_TYPE && ep_target == Some(dst));
+                let is_pawn_move = pt == PAWN_TYPE;
+                let is_double_push = is_pawn_move && (src as i8 - dst as i8).abs() == 16;
+
+                // Execute the move
+                self.set_square(Square(src), EMPTY);
+
+                // Handle promotion: keep color bit, replace type with promo type
+                if m.promo() != 0 {
+                    self.set_square(Square(dst), (piece & 0b1000) | m.promo());
+                } else {
+                    self.set_square(Square(dst), piece);
+                }
+
+                // Handle en passant capture: remove the captured pawn (behind dst)
+                if pt == PAWN_TYPE && ep_target == Some(dst) {
+                    let captured_sq = if color == 0 { dst + 8 } else { dst - 8 };
+                    self.set_square(Square(captured_sq), EMPTY);
+                }
+
+                // Handle castling: move the rook
+                if pt == KING_TYPE {
+                    match (src, dst) {
+                        (60, 62) => {
+                            // White kingside: rook h1 -> f1
+                            self.set_square(Square(61), WHITE_ROOK);
+                            self.set_square(Square(63), EMPTY);
+                        }
+                        (60, 58) => {
+                            // White queenside: rook a1 -> d1
+                            self.set_square(Square(59), WHITE_ROOK);
+                            self.set_square(Square(56), EMPTY);
+                        }
+                        (4, 6) => {
+                            // Black kingside: rook h8 -> f8
+                            self.set_square(Square(5), BLACK_ROOK);
+                            self.set_square(Square(7), EMPTY);
+                        }
+                        (4, 2) => {
+                            // Black queenside: rook a8 -> d8
+                            self.set_square(Square(3), BLACK_ROOK);
+                            self.set_square(Square(0), EMPTY);
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Update castling rights
+                let mut new_castle = castle;
+                // King moves lose both rights for that color
+                if pt == KING_TYPE {
+                    if color == 0 {
+                        new_castle &= !(WHITE_KINGSIDE_CASTLE | WHITE_QUEENSIDE_CASTLE);
+                    } else {
+                        new_castle &= !(BLACK_KINGSIDE_CASTLE | BLACK_QUEENSIDE_CASTLE);
+                    }
+                }
+                // Rook moves or is captured
+                if src == 63 || dst == 63 {
+                    new_castle &= !WHITE_KINGSIDE_CASTLE;
+                } // h1
+                if src == 56 || dst == 56 {
+                    new_castle &= !WHITE_QUEENSIDE_CASTLE;
+                } // a1
+                if src == 7 || dst == 7 {
+                    new_castle &= !BLACK_KINGSIDE_CASTLE;
+                } // h8
+                if src == 0 || dst == 0 {
+                    new_castle &= !BLACK_QUEENSIDE_CASTLE;
+                } // a8
+                self.set_castle_bits(new_castle);
+
+                // Update en passant target
+                if is_double_push {
+                    let ep_sq = if color == 0 { src - 8 } else { src + 8 };
+                    self.set_en_passant(sq_file(ep_sq) as u8, true);
+                } else {
+                    self.set_en_passant(0, false);
+                }
+
+                // Update active player
+                self.set_active_player(active_player ^ 1);
+
+                // Update counters
+                if is_pawn_move || is_capture {
+                    self.set_halfmove_cnt(0);
+                } else {
+                    self.inc_halfmove_cnt();
+                }
+                if active_player == 1 {
+                    // Black just moved
+                    self.inc_fullmove_cnt();
+                }
+
                 return Ok(());
             }
         }
@@ -202,6 +296,27 @@ impl Fen {
 
     fn inc_fullmove_cnt(&mut self) {
         self.0[34] += 1
+    }
+
+    fn set_castle_bits(&mut self, bits: u8) {
+        self.0[32] = (self.0[32] & 0b00001111) | (bits << 4);
+    }
+
+    fn set_en_passant(&mut self, file: u8, has_ep: bool) {
+        let ep_bits = if has_ep { 0b1000 | file } else { 0 };
+        self.0[32] = (self.0[32] & 0b11110000) | ep_bits;
+    }
+
+    fn set_active_player(&mut self, player: u8) {
+        self.0[33] = (self.0[33] & 0b01111111) | (player << 7);
+    }
+
+    fn set_halfmove_cnt(&mut self, cnt: u8) {
+        self.0[33] = (self.0[33] & 0b10000000) | (cnt & 0b01111111);
+    }
+
+    fn set_fullmove_cnt(&mut self, cnt: u8) {
+        self.0[34] = cnt;
     }
 
     /// Bitboard of all occupied squares (both colors).
@@ -935,4 +1050,202 @@ mod tests {
         assert!("e7-e8-x".parse::<Move>().is_err());      // invalid promo
     }
 
+    // Phase 1 tests
+
+    fn empty_fen() -> Fen {
+        let mut fen = Fen::new();
+        for sq in 0..64 {
+            fen.set_square(Square(sq), EMPTY);
+        }
+        fen.set_castle_bits(NO_CASTLE);
+        fen.set_en_passant(0, false);
+        fen.set_active_player(WHITE_MOVE);
+        fen.set_halfmove_cnt(0);
+        fen.set_fullmove_cnt(1);
+        fen
+    }
+
+    #[test]
+    fn promotion_queen() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(12), WHITE_PAWN); // e7
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(0), BLACK_KING);  // a8
+
+        let m: Move = "e7-e8-q".parse().unwrap();
+        fen.try_move(m).unwrap();
+
+        assert_eq!(fen.square_bits(Square(4)), WHITE_QUEEN); // e8
+        assert_eq!(fen.square_bits(Square(12)), EMPTY); // e7
+        assert_eq!(fen.active_player_bit(), BLACK_MOVE);
+    }
+
+    #[test]
+    fn en_passant_capture() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(28), WHITE_PAWN); // e5
+        fen.set_square(Square(11), BLACK_PAWN); // d7
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(4), BLACK_KING);  // e8
+
+        // Black plays d7-d5 (double push)
+        fen.set_active_player(BLACK_MOVE);
+        let m1: Move = "d7-d5".parse().unwrap();
+        fen.try_move(m1).unwrap();
+
+        // White plays e5xd6 (en passant)
+        let m2: Move = "e5-d6".parse().unwrap();
+        fen.try_move(m2).unwrap();
+
+        assert_eq!(fen.square_bits(Square(19)), WHITE_PAWN); // d6
+        assert_eq!(fen.square_bits(Square(27)), EMPTY); // d5 (captured pawn removed)
+        assert_eq!(fen.square_bits(Square(28)), EMPTY); // e5
+        assert_eq!(fen.active_player_bit(), BLACK_MOVE);
+    }
+
+    #[test]
+    fn castling_kingside() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(63), WHITE_ROOK); // h1
+        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_castle_bits(WHITE_KINGSIDE_CASTLE);
+
+        let m: Move = "e1-g1".parse().unwrap();
+        fen.try_move(m).unwrap();
+
+        assert_eq!(fen.square_bits(Square(62)), WHITE_KING); // g1
+        assert_eq!(fen.square_bits(Square(61)), WHITE_ROOK); // f1
+        assert_eq!(fen.square_bits(Square(60)), EMPTY); // e1
+        assert_eq!(fen.square_bits(Square(63)), EMPTY); // h1
+        assert_eq!(fen.active_player_bit(), BLACK_MOVE);
+    }
+
+    #[test]
+    fn castling_queenside() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(56), WHITE_ROOK); // a1
+        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_castle_bits(WHITE_QUEENSIDE_CASTLE);
+
+        let m: Move = "e1-c1".parse().unwrap();
+        fen.try_move(m).unwrap();
+
+        assert_eq!(fen.square_bits(Square(58)), WHITE_KING); // c1
+        assert_eq!(fen.square_bits(Square(59)), WHITE_ROOK); // d1
+        assert_eq!(fen.square_bits(Square(60)), EMPTY); // e1
+        assert_eq!(fen.square_bits(Square(56)), EMPTY); // a1
+        assert_eq!(fen.active_player_bit(), BLACK_MOVE);
+    }
+
+    #[test]
+    fn castling_rights_lost_on_rook_capture() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(56), WHITE_ROOK); // a1
+        fen.set_square(Square(0), BLACK_ROOK);  // a8
+        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_castle_bits(WHITE_QUEENSIDE_CASTLE);
+
+        // Black plays a8xa1 (captures rook)
+        fen.set_active_player(BLACK_MOVE);
+        let m: Move = "a8-a1".parse().unwrap();
+        fen.try_move(m).unwrap();
+
+        assert_eq!(fen.castle_bits() & WHITE_QUEENSIDE_CASTLE, 0);
+    }
+
+    #[test]
+    fn halfmove_reset_on_pawn_move() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(52), WHITE_PAWN); // e2
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_halfmove_cnt(5);
+
+        let m: Move = "e2-e4".parse().unwrap();
+        fen.try_move(m).unwrap();
+
+        assert_eq!(fen.halfmove_cnt(), 0);
+    }
+
+    #[test]
+    fn halfmove_reset_on_capture() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(36), WHITE_PAWN); // e4
+        fen.set_square(Square(27), BLACK_PAWN); // d5
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_halfmove_cnt(5);
+
+        let m: Move = "e4-d5".parse().unwrap();
+        fen.try_move(m).unwrap();
+
+        assert_eq!(fen.halfmove_cnt(), 0);
+    }
+
+    #[test]
+    fn halfmove_increment_on_quiet_move() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(4), BLACK_KING);  // e8
+
+        let m: Move = "e1-e2".parse().unwrap();
+        fen.try_move(m).unwrap();
+
+        assert_eq!(fen.halfmove_cnt(), 1);
+    }
+
+    #[test]
+    fn fullmove_increment_after_black() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_fullmove_cnt(1);
+
+        // White moves
+        let m1: Move = "e1-e2".parse().unwrap();
+        fen.try_move(m1).unwrap();
+        assert_eq!(fen.fullmove_cnt(), 1); // Not incremented yet
+
+        // Black moves
+        let m2: Move = "e8-e7".parse().unwrap();
+        fen.try_move(m2).unwrap();
+        assert_eq!(fen.fullmove_cnt(), 2); // Incremented after black
+    }
+
+    #[test]
+    fn en_passant_target_set_on_double_push() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(52), WHITE_PAWN); // e2
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(4), BLACK_KING);  // e8
+
+        let m: Move = "e2-e4".parse().unwrap();
+        fen.try_move(m).unwrap();
+
+        // En passant target should be e3 (sq 44)
+        let ep_target = fen.en_passant_target(BLACK_MOVE);
+        assert_eq!(ep_target, Some(44)); // e3
+    }
+
+    #[test]
+    fn en_passant_target_cleared_on_other_moves() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(52), WHITE_PAWN); // e2
+        fen.set_square(Square(11), BLACK_PAWN); // d7
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(4), BLACK_KING);  // e8
+
+        // White plays e2-e4 (sets ep target to e3)
+        let m1: Move = "e2-e4".parse().unwrap();
+        fen.try_move(m1).unwrap();
+        assert_eq!(fen.en_passant_target(BLACK_MOVE), Some(44)); // e3
+
+        // Black plays d7-d6 (should clear ep target)
+        let m2: Move = "d7-d6".parse().unwrap();
+        fen.try_move(m2).unwrap();
+        assert_eq!(fen.en_passant_target(WHITE_MOVE), None);
+    }
 }
