@@ -113,7 +113,7 @@ impl Display for Error {
 ///     Byte 32:  [castling:4][has_en_passant:1][en_passant_file:3]
 ///     Byte 33:  [active_player:1][halfmove_cnt:7]
 ///     Byte 34:  [fullmove_cnt:8]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Fen([u8; 35]);
 
 impl Fen {
@@ -127,113 +127,119 @@ impl Fen {
 
         for candidate in self.all_valid_moves_from_square(Square(src)) {
             if m == candidate {
-                let piece = self.square_bits(Square(src));
-                let pt = piece_type(piece);
-                let color = piece_color(piece);
-                let active_player = self.active_player_bit();
-                let castle = self.castle_bits();
-                let ep_target = self.en_passant_target(active_player);
-
-                // Determine move characteristics
-                let is_capture = self.square_bits(Square(dst)) != 0
-                    || (pt == PAWN_TYPE && ep_target == Some(dst));
-                let is_pawn_move = pt == PAWN_TYPE;
-                let is_double_push = is_pawn_move && (src as i8 - dst as i8).abs() == 16;
-
-                // Execute the move
-                self.set_square(Square(src), EMPTY);
-
-                // Handle promotion: keep color bit, replace type with promo type
-                if m.promo() != 0 {
-                    self.set_square(Square(dst), (piece & 0b1000) | m.promo());
-                } else {
-                    self.set_square(Square(dst), piece);
-                }
-
-                // Handle en passant capture: remove the captured pawn (behind dst)
-                if pt == PAWN_TYPE && ep_target == Some(dst) {
-                    let captured_sq = if color == 0 { dst + 8 } else { dst - 8 };
-                    self.set_square(Square(captured_sq), EMPTY);
-                }
-
-                // Handle castling: move the rook
-                if pt == KING_TYPE {
-                    match (src, dst) {
-                        (60, 62) => {
-                            // White kingside: rook h1 -> f1
-                            self.set_square(Square(61), WHITE_ROOK);
-                            self.set_square(Square(63), EMPTY);
-                        }
-                        (60, 58) => {
-                            // White queenside: rook a1 -> d1
-                            self.set_square(Square(59), WHITE_ROOK);
-                            self.set_square(Square(56), EMPTY);
-                        }
-                        (4, 6) => {
-                            // Black kingside: rook h8 -> f8
-                            self.set_square(Square(5), BLACK_ROOK);
-                            self.set_square(Square(7), EMPTY);
-                        }
-                        (4, 2) => {
-                            // Black queenside: rook a8 -> d8
-                            self.set_square(Square(3), BLACK_ROOK);
-                            self.set_square(Square(0), EMPTY);
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Update castling rights
-                let mut new_castle = castle;
-                // King moves lose both rights for that color
-                if pt == KING_TYPE {
-                    if color == 0 {
-                        new_castle &= !(WHITE_KINGSIDE_CASTLE | WHITE_QUEENSIDE_CASTLE);
-                    } else {
-                        new_castle &= !(BLACK_KINGSIDE_CASTLE | BLACK_QUEENSIDE_CASTLE);
-                    }
-                }
-                // Rook moves or is captured
-                if src == 63 || dst == 63 {
-                    new_castle &= !WHITE_KINGSIDE_CASTLE;
-                } // h1
-                if src == 56 || dst == 56 {
-                    new_castle &= !WHITE_QUEENSIDE_CASTLE;
-                } // a1
-                if src == 7 || dst == 7 {
-                    new_castle &= !BLACK_KINGSIDE_CASTLE;
-                } // h8
-                if src == 0 || dst == 0 {
-                    new_castle &= !BLACK_QUEENSIDE_CASTLE;
-                } // a8
-                self.set_castle_bits(new_castle);
-
-                // Update en passant target
-                if is_double_push {
-                    let ep_sq = if color == 0 { src - 8 } else { src + 8 };
-                    self.set_en_passant(sq_file(ep_sq) as u8, true);
-                } else {
-                    self.set_en_passant(0, false);
-                }
-
-                // Update active player
-                self.set_active_player(active_player ^ 1);
-
-                // Update counters
-                if is_pawn_move || is_capture {
-                    self.set_halfmove_cnt(0);
-                } else {
-                    self.inc_halfmove_cnt();
-                }
-                if active_player == 1 {
-                    // Black just moved
-                    self.inc_fullmove_cnt();
-                }
-
+                self.apply_move_unchecked(m);
                 return Ok(());
             }
         }
         Err(Error::InvalidMove)
+    }
+
+    fn apply_move_unchecked(&mut self, m: Move) {
+        let src = m.src();
+        let dst = m.dst();
+
+        let piece = self.square_bits(Square(src));
+        let pt = piece_type(piece);
+        let color = piece_color(piece);
+        let active_player = self.active_player_bit();
+        let castle = self.castle_bits();
+        let ep_target = self.en_passant_target(active_player);
+
+        // Determine move characteristics
+        let is_capture = self.square_bits(Square(dst)) != 0
+            || (pt == PAWN_TYPE && ep_target == Some(dst));
+        let is_pawn_move = pt == PAWN_TYPE;
+        let is_double_push = is_pawn_move && (src as i8 - dst as i8).abs() == 16;
+
+        // Execute the move
+        self.set_square(Square(src), EMPTY);
+
+        // Handle promotion: keep color bit, replace type with promo type
+        if m.promo() != 0 {
+            self.set_square(Square(dst), (piece & 0b1000) | m.promo());
+        } else {
+            self.set_square(Square(dst), piece);
+        }
+
+        // Handle en passant capture: remove the captured pawn (behind dst)
+        if pt == PAWN_TYPE && ep_target == Some(dst) {
+            let captured_sq = if color == 0 { dst + 8 } else { dst - 8 };
+            self.set_square(Square(captured_sq), EMPTY);
+        }
+
+        // Handle castling: move the rook
+        if pt == KING_TYPE {
+            match (src, dst) {
+                (60, 62) => {
+                    // White kingside: rook h1 -> f1
+                    self.set_square(Square(61), WHITE_ROOK);
+                    self.set_square(Square(63), EMPTY);
+                }
+                (60, 58) => {
+                    // White queenside: rook a1 -> d1
+                    self.set_square(Square(59), WHITE_ROOK);
+                    self.set_square(Square(56), EMPTY);
+                }
+                (4, 6) => {
+                    // Black kingside: rook h8 -> f8
+                    self.set_square(Square(5), BLACK_ROOK);
+                    self.set_square(Square(7), EMPTY);
+                }
+                (4, 2) => {
+                    // Black queenside: rook a8 -> d8
+                    self.set_square(Square(3), BLACK_ROOK);
+                    self.set_square(Square(0), EMPTY);
+                }
+                _ => {}
+            }
+        }
+
+        // Update castling rights
+        let mut new_castle = castle;
+        // King moves lose both rights for that color
+        if pt == KING_TYPE {
+            if color == 0 {
+                new_castle &= !(WHITE_KINGSIDE_CASTLE | WHITE_QUEENSIDE_CASTLE);
+            } else {
+                new_castle &= !(BLACK_KINGSIDE_CASTLE | BLACK_QUEENSIDE_CASTLE);
+            }
+        }
+        // Rook moves or is captured
+        if src == 63 || dst == 63 {
+            new_castle &= !WHITE_KINGSIDE_CASTLE;
+        } // h1
+        if src == 56 || dst == 56 {
+            new_castle &= !WHITE_QUEENSIDE_CASTLE;
+        } // a1
+        if src == 7 || dst == 7 {
+            new_castle &= !BLACK_KINGSIDE_CASTLE;
+        } // h8
+        if src == 0 || dst == 0 {
+            new_castle &= !BLACK_QUEENSIDE_CASTLE;
+        } // a8
+        self.set_castle_bits(new_castle);
+
+        // Update en passant target
+        if is_double_push {
+            let ep_sq = if color == 0 { src - 8 } else { src + 8 };
+            self.set_en_passant(sq_file(ep_sq) as u8, true);
+        } else {
+            self.set_en_passant(0, false);
+        }
+
+        // Update active player
+        self.set_active_player(active_player ^ 1);
+
+        // Update counters
+        if is_pawn_move || is_capture {
+            self.set_halfmove_cnt(0);
+        } else {
+            self.inc_halfmove_cnt();
+        }
+        if active_player == 1 {
+            // Black just moved
+            self.inc_fullmove_cnt();
+        }
     }
 
     fn all_valid_moves(&self) -> Vec<Move> {
@@ -242,6 +248,16 @@ impl Fen {
             moves.extend(self.all_valid_moves_from_square(Square(i as u8)));
         }
         moves
+    }
+
+    fn king_square(&self, color: u8) -> u8 {
+        for sq in 0..64 {
+            let bits = self.square_bits(Square(sq));
+            if bits != 0 && (bits >> 3) == color && piece_type(bits) == KING_TYPE {
+                return sq;
+            }
+        }
+        panic!("no king found for color {color}");
     }
 
     fn set_square(&mut self, s: Square, p: u8) {
@@ -519,6 +535,14 @@ impl Fen {
             }
             _ => {}
         }
+
+        // Filter: only keep moves that don't leave the king in check
+        moves.retain(|&m| {
+            let mut test_fen = *self;
+            test_fen.apply_move_unchecked(m);
+            let king_sq = test_fen.king_square(active_player);
+            !test_fen.is_attacked_by(king_sq, active_player ^ 1)
+        });
 
         moves
     }
@@ -1247,5 +1271,73 @@ mod tests {
         let m2: Move = "d7-d6".parse().unwrap();
         fen.try_move(m2).unwrap();
         assert_eq!(fen.en_passant_target(WHITE_MOVE), None);
+    }
+
+    // Phase 2 tests
+
+    #[test]
+    fn pinned_piece_cannot_move_off_pin_line() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(52), WHITE_ROOK); // e2 — pinned
+        fen.set_square(Square(4), BLACK_ROOK);  // e8 — pinning
+        fen.set_square(Square(0), BLACK_KING);  // a8
+
+        let moves = fen.all_valid_moves_from_square(Square(52));
+        // Rook can only move along the e-file (e3-e7), not horizontally
+        for m in &moves {
+            assert_eq!(
+                sq_file(m.dst()),
+                4,
+                "pinned rook can only stay on e-file"
+            );
+        }
+        // Should have moves along the e-file
+        assert!(!moves.is_empty());
+    }
+
+    #[test]
+    fn king_cannot_move_into_check() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(48), BLACK_ROOK); // a2
+        fen.set_square(Square(0), BLACK_KING);  // a8
+
+        let moves = fen.all_valid_moves_from_square(Square(60));
+        // King cannot move to d2, e2, f2 — attacked by black rook on a2
+        for m in &moves {
+            assert_ne!(m.dst(), 51, "king cannot move to d2");
+            assert_ne!(m.dst(), 52, "king cannot move to e2");
+            assert_ne!(m.dst(), 53, "king cannot move to f2");
+        }
+        // King can move to d1 and f1
+        assert!(moves.iter().any(|m| m.dst() == 59), "king can move to d1");
+        assert!(moves.iter().any(|m| m.dst() == 61), "king can move to f1");
+    }
+
+    #[test]
+    fn en_passant_pinned_pawn_cannot_capture() {
+        let mut fen = empty_fen();
+        fen.set_square(Square(60), WHITE_KING); // e1
+        fen.set_square(Square(28), WHITE_PAWN); // e5 — pinned
+        fen.set_square(Square(11), BLACK_PAWN); // d7
+        fen.set_square(Square(4), BLACK_ROOK);  // e8 — pinning
+        fen.set_square(Square(0), BLACK_KING);  // a8
+
+        // Black plays d7-d5 (double push)
+        fen.set_active_player(BLACK_MOVE);
+        let m1: Move = "d7-d5".parse().unwrap();
+        fen.try_move(m1).unwrap();
+
+        // White's e5 pawn is pinned — en passant capture would expose king
+        let moves = fen.all_valid_moves_from_square(Square(28));
+        for m in &moves {
+            assert_ne!(m.dst(), 19, "pinned pawn cannot capture en passant");
+        }
+        // Pawn can still move forward to e6 (sq 20)
+        assert!(
+            moves.iter().any(|m| m.dst() == 20),
+            "pinned pawn can move forward"
+        );
     }
 }
