@@ -134,6 +134,103 @@ impl Fen {
         Err(Error::InvalidMove)
     }
 
+    pub fn to_fen(&self) -> String {
+        let mut result = String::new();
+
+        // Piece placement
+        for rank in 0..8 {
+            let mut empty_count = 0;
+            for file in 0..8 {
+                let sq = rank * 8 + file;
+                let bits = self.square_bits(Square(sq));
+                if bits == 0 {
+                    empty_count += 1;
+                } else {
+                    if empty_count > 0 {
+                        result.push_str(&empty_count.to_string());
+                        empty_count = 0;
+                    }
+                    let ch = match bits {
+                        WHITE_PAWN => 'P',
+                        WHITE_ROOK => 'R',
+                        WHITE_KNIGHT => 'N',
+                        WHITE_BISHOP => 'B',
+                        WHITE_QUEEN => 'Q',
+                        WHITE_KING => 'K',
+                        BLACK_PAWN => 'p',
+                        BLACK_ROOK => 'r',
+                        BLACK_KNIGHT => 'n',
+                        BLACK_BISHOP => 'b',
+                        BLACK_QUEEN => 'q',
+                        BLACK_KING => 'k',
+                        _ => '?',
+                    };
+                    result.push(ch);
+                }
+            }
+            if empty_count > 0 {
+                result.push_str(&empty_count.to_string());
+            }
+            if rank < 7 {
+                result.push('/');
+            }
+        }
+        result.push(' ');
+
+        // Active color
+        if self.active_player_bit() == WHITE_MOVE {
+            result.push('w');
+        } else {
+            result.push('b');
+        }
+        result.push(' ');
+
+        // Castling
+        let castle = self.castle_bits();
+        if castle == 0 {
+            result.push('-');
+        } else {
+            if castle & WHITE_KINGSIDE_CASTLE != 0 {
+                result.push('K');
+            }
+            if castle & WHITE_QUEENSIDE_CASTLE != 0 {
+                result.push('Q');
+            }
+            if castle & BLACK_KINGSIDE_CASTLE != 0 {
+                result.push('k');
+            }
+            if castle & BLACK_QUEENSIDE_CASTLE != 0 {
+                result.push('q');
+            }
+        }
+        result.push(' ');
+
+        // En passant
+        let ep_bits = self.en_passant_bits();
+        let has_ep = (ep_bits >> 3) & 1;
+        if has_ep == 0 {
+            result.push('-');
+        } else {
+            let file = ep_bits & 0b0111;
+            let file_ch = (b'a' + file) as char;
+            let rank = if self.active_player_bit() == WHITE_MOVE {
+                '6'
+            } else {
+                '3'
+            };
+            result.push(file_ch);
+            result.push(rank);
+        }
+        result.push(' ');
+
+        // Halfmove and fullmove
+        result.push_str(&self.halfmove_cnt().to_string());
+        result.push(' ');
+        result.push_str(&self.fullmove_cnt().to_string());
+
+        result
+    }
+
     fn apply_move_unchecked(&mut self, m: Move) {
         let src = m.src();
         let dst = m.dst();
@@ -682,6 +779,184 @@ impl Default for Fen {
             WHITE_MOVE << 7,
             1, // fullmove_cnt
         ])
+    }
+}
+
+impl FromStr for Fen {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let fields: Vec<&str> = s.split_whitespace().collect();
+        if fields.len() != 6 {
+            return Err(Error::InvalidFenString(s.to_string()));
+        }
+
+        // Parse piece placement
+        let placement = fields[0];
+        let mut board = [EMPTY; 64];
+        let ranks: Vec<&str> = placement.split('/').collect();
+        if ranks.len() != 8 {
+            return Err(Error::InvalidFenString(s.to_string()));
+        }
+
+        for (i, rank_str) in ranks.iter().enumerate() {
+            let rank = i as u8; // 0 = rank 8, 7 = rank 1
+            let mut file = 0u8;
+            for ch in rank_str.chars() {
+                if ch.is_ascii_digit() {
+                    let empty = ch.to_digit(10).unwrap() as u8;
+                    file += empty;
+                } else {
+                    let piece = match ch {
+                        'P' => WHITE_PAWN,
+                        'R' => WHITE_ROOK,
+                        'N' => WHITE_KNIGHT,
+                        'B' => WHITE_BISHOP,
+                        'Q' => WHITE_QUEEN,
+                        'K' => WHITE_KING,
+                        'p' => BLACK_PAWN,
+                        'r' => BLACK_ROOK,
+                        'n' => BLACK_KNIGHT,
+                        'b' => BLACK_BISHOP,
+                        'q' => BLACK_QUEEN,
+                        'k' => BLACK_KING,
+                        _ => return Err(Error::InvalidFenString(s.to_string())),
+                    };
+                    if file >= 8 {
+                        return Err(Error::InvalidFenString(s.to_string()));
+                    }
+                    board[(rank * 8 + file) as usize] = piece;
+                    file += 1;
+                }
+            }
+            if file != 8 {
+                return Err(Error::InvalidFenString(s.to_string()));
+            }
+        }
+
+        // Parse active color
+        let active_player = match fields[1] {
+            "w" => WHITE_MOVE,
+            "b" => BLACK_MOVE,
+            _ => return Err(Error::InvalidFenString(s.to_string())),
+        };
+
+        // Parse castling
+        let mut castle = NO_CASTLE;
+        if fields[2] != "-" {
+            for ch in fields[2].chars() {
+                match ch {
+                    'K' => castle |= WHITE_KINGSIDE_CASTLE,
+                    'Q' => castle |= WHITE_QUEENSIDE_CASTLE,
+                    'k' => castle |= BLACK_KINGSIDE_CASTLE,
+                    'q' => castle |= BLACK_QUEENSIDE_CASTLE,
+                    _ => return Err(Error::InvalidFenString(s.to_string())),
+                }
+            }
+        }
+
+        // Parse en passant
+        let mut ep_file = 0u8;
+        let mut has_ep = false;
+        if fields[3] != "-" {
+            let ep_chars: Vec<char> = fields[3].chars().collect();
+            if ep_chars.len() != 2 {
+                return Err(Error::InvalidFenString(s.to_string()));
+            }
+            let file_ch = ep_chars[0];
+            let rank_ch = ep_chars[1];
+            if !('a'..='h').contains(&file_ch) {
+                return Err(Error::InvalidFenString(s.to_string()));
+            }
+            let rank_num = rank_ch.to_digit(10);
+            if rank_num.is_none() {
+                return Err(Error::InvalidFenString(s.to_string()));
+            }
+            let rank_num = rank_num.unwrap() as u8;
+            // En passant rank: 6 if white to move (black just double-pushed),
+            // 3 if black to move (white just double-pushed)
+            if active_player == WHITE_MOVE && rank_num != 6 {
+                return Err(Error::InvalidFenString(s.to_string()));
+            }
+            if active_player == BLACK_MOVE && rank_num != 3 {
+                return Err(Error::InvalidFenString(s.to_string()));
+            }
+            ep_file = (file_ch as u8) - b'a';
+            has_ep = true;
+        }
+
+        // Parse halfmove counter
+        let halfmove = fields[4]
+            .parse::<u8>()
+            .map_err(|_| Error::InvalidFenString(s.to_string()))?;
+        if halfmove > MAX_HALFMOVE_CNT {
+            return Err(Error::InvalidFenString(s.to_string()));
+        }
+
+        // Parse fullmove counter
+        let fullmove = fields[5]
+            .parse::<u8>()
+            .map_err(|_| Error::InvalidFenString(s.to_string()))?;
+        if fullmove == 0 {
+            return Err(Error::InvalidFenString(s.to_string()));
+        }
+
+        // Build the Fen
+        let mut fen = Fen([0u8; 35]);
+
+        // Set board squares
+        for sq in 0..64 {
+            fen.set_square(Square(sq), board[sq as usize]);
+        }
+
+        // Set castling
+        fen.set_castle_bits(castle);
+
+        // Set en passant
+        fen.set_en_passant(ep_file, has_ep);
+
+        // Set active player
+        fen.set_active_player(active_player);
+
+        // Set counters
+        fen.set_halfmove_cnt(halfmove);
+        fen.set_fullmove_cnt(fullmove);
+
+        // Validate: exactly one king per side
+        let mut white_kings = 0;
+        let mut black_kings = 0;
+        for sq in 0..64 {
+            let bits = fen.square_bits(Square(sq));
+            if bits == WHITE_KING {
+                white_kings += 1;
+            }
+            if bits == BLACK_KING {
+                black_kings += 1;
+            }
+        }
+        if white_kings != 1 || black_kings != 1 {
+            return Err(Error::InvalidFenString(s.to_string()));
+        }
+
+        // Validate: no pawns on rank 1 or 8
+        for file in 0..8 {
+            let sq_rank8 = file; // rank 0 = rank 8
+            let sq_rank1 = 7 * 8 + file; // rank 7 = rank 1
+            let bits8 = fen.square_bits(Square(sq_rank8));
+            let bits1 = fen.square_bits(Square(sq_rank1));
+            if piece_type(bits8) == PAWN_TYPE || piece_type(bits1) == PAWN_TYPE {
+                return Err(Error::InvalidFenString(s.to_string()));
+            }
+        }
+
+        // Validate: side not to move cannot be in check
+        let opponent = active_player ^ 1;
+        let king_sq = fen.king_square(opponent);
+        if fen.is_attacked_by(king_sq, active_player) {
+            return Err(Error::InvalidFenString(s.to_string()));
+        }
+
+        Ok(fen)
     }
 }
 
@@ -1339,5 +1614,96 @@ mod tests {
             moves.iter().any(|m| m.dst() == 20),
             "pinned pawn can move forward"
         );
+    }
+
+    // Phase 3 tests
+
+    #[test]
+    fn parse_startpos() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(fen.square_bits(Square(60)), WHITE_KING); // e1
+        assert_eq!(fen.square_bits(Square(4)), BLACK_KING);  // e8
+        assert_eq!(fen.square_bits(Square(52)), WHITE_PAWN); // e2
+        assert_eq!(fen.square_bits(Square(12)), BLACK_PAWN); // e7
+        assert_eq!(fen.active_player_bit(), WHITE_MOVE);
+        assert_eq!(fen.castle_bits(), WHITE_KINGSIDE_CASTLE | WHITE_QUEENSIDE_CASTLE | BLACK_KINGSIDE_CASTLE | BLACK_QUEENSIDE_CASTLE);
+        assert_eq!(fen.halfmove_cnt(), 0);
+        assert_eq!(fen.fullmove_cnt(), 1);
+    }
+
+    #[test]
+    fn parse_midgame_fen() {
+        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(fen.square_bits(Square(60)), WHITE_KING); // e1
+        assert_eq!(fen.square_bits(Square(4)), BLACK_KING);  // e8
+        assert_eq!(fen.active_player_bit(), WHITE_MOVE);
+        assert_eq!(fen.halfmove_cnt(), 0);
+        assert_eq!(fen.fullmove_cnt(), 1);
+    }
+
+    #[test]
+    fn fen_roundtrip_startpos() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(fen.to_fen(), "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    }
+
+    #[test]
+    fn fen_roundtrip_midgame() {
+        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(fen.to_fen(), "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+    }
+
+    #[test]
+    fn fen_roundtrip_no_castling() {
+        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w - - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(fen.to_fen(), "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w - - 0 1");
+    }
+
+    #[test]
+    fn fen_roundtrip_black_to_move() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(fen.to_fen(), "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1");
+    }
+
+    #[test]
+    fn fen_roundtrip_en_passant() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(fen.to_fen(), "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1");
+    }
+
+    #[test]
+    fn fen_reject_invalid() {
+        // Missing fields
+        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0".parse::<Fen>().is_err());
+        // Invalid piece letter
+        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNX w KQkq - 0 1".parse::<Fen>().is_err());
+        // Invalid active color
+        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR x KQkq - 0 1".parse::<Fen>().is_err());
+        // Invalid castling
+        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkqX - 0 1".parse::<Fen>().is_err());
+        // Invalid en passant
+        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq e9 0 1".parse::<Fen>().is_err());
+        // Invalid halfmove
+        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - x 1".parse::<Fen>().is_err());
+        // Invalid fullmove
+        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 0".parse::<Fen>().is_err());
+        // Two white kings
+        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNK w KQkq - 0 1".parse::<Fen>().is_err());
+        // Pawn on rank 8
+        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNP w KQkq - 0 1".parse::<Fen>().is_err());
     }
 }
