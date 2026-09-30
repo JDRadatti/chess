@@ -231,6 +231,347 @@ impl Fen {
         result
     }
 
+    pub fn parse_san(&self, san: &str) -> Result<Move, Error> {
+        let san = san.trim();
+
+        // Strip check/mate suffix
+        let san = san.trim_end_matches('+').trim_end_matches('#');
+
+        // Castling
+        if san == "O-O" || san == "0-0" {
+            let king_sq = if self.active_player_bit() == WHITE_MOVE {
+                60
+            } else {
+                4
+            };
+            let king_dst = if self.active_player_bit() == WHITE_MOVE {
+                62
+            } else {
+                6
+            };
+            return self.find_move(KING_TYPE, king_dst, None, None, 0, false);
+        }
+        if san == "O-O-O" || san == "0-0-0" {
+            let king_sq = if self.active_player_bit() == WHITE_MOVE {
+                60
+            } else {
+                4
+            };
+            let king_dst = if self.active_player_bit() == WHITE_MOVE {
+                58
+            } else {
+                2
+            };
+            return self.find_move(KING_TYPE, king_dst, None, None, 0, false);
+        }
+
+        let bytes = san.as_bytes();
+        let mut idx = 0;
+
+        // Piece letter (optional for pawns)
+        let pt = match bytes.get(idx) {
+            Some(b'K') => {
+                idx += 1;
+                KING_TYPE
+            }
+            Some(b'Q') => {
+                idx += 1;
+                QUEEN_TYPE
+            }
+            Some(b'R') => {
+                idx += 1;
+                ROOK_TYPE
+            }
+            Some(b'B') => {
+                idx += 1;
+                BISHOP_TYPE
+            }
+            Some(b'N') => {
+                idx += 1;
+                KNIGHT_TYPE
+            }
+            _ => PAWN_TYPE,
+        };
+
+        // Disambiguation and destination parsing
+        let mut disambig_file: Option<i8> = None;
+        let mut disambig_rank: Option<i8> = None;
+        let mut is_capture = false;
+        let dst: u8;
+
+        if pt == PAWN_TYPE {
+            // For pawns: [file]x[file][rank](=[piece])?
+            // Check for disambiguation file (only if followed by 'x')
+            if let Some(&ch) = bytes.get(idx) {
+                if (b'a'..=b'h').contains(&ch) {
+                    if let Some(&next_ch) = bytes.get(idx + 1) {
+                        if next_ch == b'x' {
+                            disambig_file = Some((ch - b'a') as i8);
+                            idx += 1;
+                        }
+                    }
+                }
+            }
+
+            // Check for capture
+            if let Some(&ch) = bytes.get(idx) {
+                if ch == b'x' {
+                    is_capture = true;
+                    idx += 1;
+                }
+            }
+
+            // Destination square
+            if bytes.len().saturating_sub(idx) < 2 {
+                return Err(Error::InvalidMove);
+            }
+            let dst_file = (bytes[idx] - b'a') as i8;
+            let dst_rank = (bytes[idx + 1] - b'1') as i8;
+            dst = rank_file_to_sq(7 - dst_rank, dst_file);
+            idx += 2;
+        } else {
+            // For pieces: [KQRBN][file]?[rank]?x?[file][rank](=[piece])?
+            // The destination is always the last 2 characters before any promotion
+            // Find the destination by looking for the last file+rank pattern
+
+            // First, check for capture
+            if let Some(&ch) = bytes.get(idx) {
+                if ch == b'x' {
+                    is_capture = true;
+                    idx += 1;
+                }
+            }
+
+            // For pieces, we need to find the destination square
+            // The destination is the last file+rank before any promotion
+            // Strategy: scan from the end to find the destination
+
+            // Find the position of the destination square
+            // The destination is [file][rank] and is followed by optional [=piece]
+            let mut dst_idx = idx;
+            let mut found_dst = false;
+
+            // Look for the last occurrence of [a-h][1-8] which is the destination
+            let mut i = idx;
+            while i + 1 < bytes.len() {
+                if (b'a'..=b'h').contains(&bytes[i]) && (b'1'..=b'8').contains(&bytes[i + 1]) {
+                    // Check if this is followed by '=' or end of string
+                    if i + 2 >= bytes.len() || bytes[i + 2] == b'=' {
+                        dst_idx = i;
+                        found_dst = true;
+                    }
+                }
+                i += 1;
+            }
+
+            if !found_dst {
+                return Err(Error::InvalidMove);
+            }
+
+            // Parse disambiguation (everything between piece letter and destination)
+            let disambig_bytes = &bytes[idx..dst_idx];
+            let mut di = 0;
+            while di < disambig_bytes.len() {
+                let ch = disambig_bytes[di];
+                if (b'a'..=b'h').contains(&ch) {
+                    disambig_file = Some((ch - b'a') as i8);
+                } else if (b'1'..=b'8').contains(&ch) {
+                    // Convert SAN rank (1-8) to code rank (0=rank8, 7=rank1)
+                    disambig_rank = Some(7 - (ch - b'1') as i8);
+                }
+                di += 1;
+            }
+
+            // Parse destination
+            let dst_file = (bytes[dst_idx] - b'a') as i8;
+            let dst_rank = (bytes[dst_idx + 1] - b'1') as i8;
+            dst = rank_file_to_sq(7 - dst_rank, dst_file);
+            idx = dst_idx + 2;
+        }
+
+        // Promotion
+        let mut promo = 0;
+        if bytes.len() > idx && bytes[idx] == b'=' {
+            idx += 1;
+            if bytes.len() <= idx {
+                return Err(Error::InvalidMove);
+            }
+            promo = match bytes[idx] {
+                b'Q' => QUEEN_TYPE,
+                b'R' => ROOK_TYPE,
+                b'B' => BISHOP_TYPE,
+                b'N' => KNIGHT_TYPE,
+                _ => return Err(Error::InvalidMove),
+            };
+        }
+
+        // Find the matching move
+        self.find_move(pt, dst, disambig_file, disambig_rank, promo, is_capture)
+    }
+
+    fn find_move(
+        &self,
+        pt: u8,
+        dst: u8,
+        disambig_file: Option<i8>,
+        disambig_rank: Option<i8>,
+        promo: u8,
+        is_capture: bool,
+    ) -> Result<Move, Error> {
+        let active_player = self.active_player_bit();
+        let mut matches = vec![];
+
+        for m in self.all_valid_moves() {
+            if m.dst() != dst || m.promo() != promo {
+                continue;
+            }
+            let src = m.src();
+            let src_bits = self.square_bits(Square(src));
+            if piece_type(src_bits) != pt {
+                continue;
+            }
+            if let Some(df) = disambig_file {
+                if sq_file(src) != df {
+                    continue;
+                }
+            }
+            if let Some(dr) = disambig_rank {
+                if sq_rank(src) != dr {
+                    continue;
+                }
+            }
+            // For pawns, check capture notation
+            if pt == PAWN_TYPE {
+                let dst_bits = self.square_bits(Square(dst));
+                let actual_capture =
+                    dst_bits != 0 || self.en_passant_target(active_player) == Some(dst);
+                if is_capture != actual_capture {
+                    continue;
+                }
+            }
+            matches.push(m);
+        }
+
+        if matches.len() == 1 {
+            Ok(matches[0])
+        } else {
+            Err(Error::InvalidMove)
+        }
+    }
+
+    pub fn to_san(&self, m: &Move) -> String {
+        let mut result = String::new();
+
+        let src = m.src();
+        let dst = m.dst();
+        let piece = self.square_bits(Square(src));
+        let pt = piece_type(piece);
+        let active_player = self.active_player_bit();
+
+        // Castling
+        if pt == KING_TYPE {
+            if (src == 60 && dst == 62) || (src == 4 && dst == 6) {
+                result.push_str("O-O");
+            } else if (src == 60 && dst == 58) || (src == 4 && dst == 2) {
+                result.push_str("O-O-O");
+            } else {
+                result.push('K');
+            }
+        } else if pt == PAWN_TYPE {
+            // Pawn move
+            let dst_bits = self.square_bits(Square(dst));
+            let is_capture =
+                dst_bits != 0 || self.en_passant_target(active_player) == Some(dst);
+            if is_capture {
+                let src_file = sq_file(src);
+                result.push((b'a' + src_file as u8) as char);
+                result.push('x');
+            }
+            let dst_file = sq_file(dst);
+            let dst_rank = sq_rank(dst);
+            result.push((b'a' + dst_file as u8) as char);
+            result.push((b'1' + (7 - dst_rank) as u8) as char);
+            if m.promo() != 0 {
+                result.push('=');
+                result.push(match m.promo() {
+                    QUEEN_TYPE => 'Q',
+                    ROOK_TYPE => 'R',
+                    BISHOP_TYPE => 'B',
+                    KNIGHT_TYPE => 'N',
+                    _ => '?',
+                });
+            }
+        } else {
+            // Piece move
+            result.push(match pt {
+                KING_TYPE => 'K',
+                QUEEN_TYPE => 'Q',
+                ROOK_TYPE => 'R',
+                BISHOP_TYPE => 'B',
+                KNIGHT_TYPE => 'N',
+                _ => '?',
+            });
+
+            // Disambiguation
+            let mut same_type_moves = vec![];
+            for other_m in self.all_valid_moves() {
+                if other_m.dst() == dst && other_m.src() != src {
+                    let other_bits = self.square_bits(Square(other_m.src()));
+                    if piece_type(other_bits) == pt {
+                        same_type_moves.push(other_m);
+                    }
+                }
+            }
+
+            if !same_type_moves.is_empty() {
+                let src_file = sq_file(src);
+                let src_rank = sq_rank(src);
+                let file_unique = same_type_moves.iter().all(|m| sq_file(m.src()) != src_file);
+                let rank_unique = same_type_moves.iter().all(|m| sq_rank(m.src()) != src_rank);
+
+                if file_unique {
+                    result.push((b'a' + src_file as u8) as char);
+                } else if rank_unique {
+                    result.push((b'1' + (7 - src_rank) as u8) as char);
+                } else {
+                    result.push((b'a' + src_file as u8) as char);
+                    result.push((b'1' + (7 - src_rank) as u8) as char);
+                }
+            }
+
+            // Capture
+            let dst_bits = self.square_bits(Square(dst));
+            if dst_bits != 0 {
+                result.push('x');
+            }
+
+            // Destination
+            let dst_file = sq_file(dst);
+            let dst_rank = sq_rank(dst);
+            result.push((b'a' + dst_file as u8) as char);
+            result.push((b'1' + (7 - dst_rank) as u8) as char);
+        }
+
+        // Check/mate suffix
+        let mut test_fen = *self;
+        test_fen.apply_move_unchecked(*m);
+        let opponent = active_player ^ 1;
+        let king_sq = test_fen.king_square(opponent);
+        if test_fen.is_attacked_by(king_sq, active_player) {
+            // Check if it's checkmate
+            let has_legal_moves = (0..64).any(|sq| {
+                !test_fen.all_valid_moves_from_square(Square(sq)).is_empty()
+            });
+            if has_legal_moves {
+                result.push('+');
+            } else {
+                result.push('#');
+            }
+        }
+
+        result
+    }
+
     fn apply_move_unchecked(&mut self, m: Move) {
         let src = m.src();
         let dst = m.dst();
@@ -243,8 +584,8 @@ impl Fen {
         let ep_target = self.en_passant_target(active_player);
 
         // Determine move characteristics
-        let is_capture = self.square_bits(Square(dst)) != 0
-            || (pt == PAWN_TYPE && ep_target == Some(dst));
+        let is_capture =
+            self.square_bits(Square(dst)) != 0 || (pt == PAWN_TYPE && ep_target == Some(dst));
         let is_pawn_move = pt == PAWN_TYPE;
         let is_double_push = is_pawn_move && (src as i8 - dst as i8).abs() == 16;
 
@@ -524,7 +865,7 @@ impl Fen {
         false
     }
 
-    // NOTE: will probably need to optimize this. 
+    // NOTE: will probably need to optimize this.
     // Max number of moves is 218
     fn all_valid_moves_from_square(&self, s: Square) -> Vec<Move> {
         let mut moves = Vec::with_capacity(8);
@@ -1319,34 +1660,34 @@ mod tests {
     fn move_parse_with_promo() {
         let m: Move = "e7-e8-q".parse().unwrap();
         assert_eq!(m.src(), 12); // e7
-        assert_eq!(m.dst(), 4);  // e8
+        assert_eq!(m.dst(), 4); // e8
         assert_eq!(m.promo(), QUEEN_TYPE);
 
         let m2: Move = "a7-a8-n".parse().unwrap();
-        assert_eq!(m2.src(), 8);  // a7
-        assert_eq!(m2.dst(), 0);  // a8
+        assert_eq!(m2.src(), 8); // a7
+        assert_eq!(m2.dst(), 0); // a8
         assert_eq!(m2.promo(), KNIGHT_TYPE);
     }
 
     #[test]
     fn move_parse_corners() {
         let m: Move = "a8-h1".parse().unwrap();
-        assert_eq!(m.src(), 0);  // a8
+        assert_eq!(m.src(), 0); // a8
         assert_eq!(m.dst(), 63); // h1
 
         let m2: Move = "h1-a8".parse().unwrap();
         assert_eq!(m2.src(), 63); // h1
-        assert_eq!(m2.dst(), 0);  // a8
+        assert_eq!(m2.dst(), 0); // a8
     }
 
     #[test]
     fn move_parse_errors() {
-        assert!("e2e4".parse::<Move>().is_err());       // missing dashes
-        assert!("e2e4e".parse::<Move>().is_err());       // too long
-        assert!("e2".parse::<Move>().is_err());           // too short
-        assert!("i2-e4".parse::<Move>().is_err());        // invalid file
-        assert!("e9-e4".parse::<Move>().is_err());        // invalid rank
-        assert!("e7-e8-x".parse::<Move>().is_err());      // invalid promo
+        assert!("e2e4".parse::<Move>().is_err()); // missing dashes
+        assert!("e2e4e".parse::<Move>().is_err()); // too long
+        assert!("e2".parse::<Move>().is_err()); // too short
+        assert!("i2-e4".parse::<Move>().is_err()); // invalid file
+        assert!("e9-e4".parse::<Move>().is_err()); // invalid rank
+        assert!("e7-e8-x".parse::<Move>().is_err()); // invalid promo
     }
 
     // Phase 1 tests
@@ -1369,7 +1710,7 @@ mod tests {
         let mut fen = empty_fen();
         fen.set_square(Square(12), WHITE_PAWN); // e7
         fen.set_square(Square(60), WHITE_KING); // e1
-        fen.set_square(Square(0), BLACK_KING);  // a8
+        fen.set_square(Square(0), BLACK_KING); // a8
 
         let m: Move = "e7-e8-q".parse().unwrap();
         fen.try_move(m).unwrap();
@@ -1385,7 +1726,7 @@ mod tests {
         fen.set_square(Square(28), WHITE_PAWN); // e5
         fen.set_square(Square(11), BLACK_PAWN); // d7
         fen.set_square(Square(60), WHITE_KING); // e1
-        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_square(Square(4), BLACK_KING); // e8
 
         // Black plays d7-d5 (double push)
         fen.set_active_player(BLACK_MOVE);
@@ -1407,7 +1748,7 @@ mod tests {
         let mut fen = empty_fen();
         fen.set_square(Square(60), WHITE_KING); // e1
         fen.set_square(Square(63), WHITE_ROOK); // h1
-        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_square(Square(4), BLACK_KING); // e8
         fen.set_castle_bits(WHITE_KINGSIDE_CASTLE);
 
         let m: Move = "e1-g1".parse().unwrap();
@@ -1425,7 +1766,7 @@ mod tests {
         let mut fen = empty_fen();
         fen.set_square(Square(60), WHITE_KING); // e1
         fen.set_square(Square(56), WHITE_ROOK); // a1
-        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_square(Square(4), BLACK_KING); // e8
         fen.set_castle_bits(WHITE_QUEENSIDE_CASTLE);
 
         let m: Move = "e1-c1".parse().unwrap();
@@ -1443,8 +1784,8 @@ mod tests {
         let mut fen = empty_fen();
         fen.set_square(Square(60), WHITE_KING); // e1
         fen.set_square(Square(56), WHITE_ROOK); // a1
-        fen.set_square(Square(0), BLACK_ROOK);  // a8
-        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_square(Square(0), BLACK_ROOK); // a8
+        fen.set_square(Square(4), BLACK_KING); // e8
         fen.set_castle_bits(WHITE_QUEENSIDE_CASTLE);
 
         // Black plays a8xa1 (captures rook)
@@ -1460,7 +1801,7 @@ mod tests {
         let mut fen = empty_fen();
         fen.set_square(Square(52), WHITE_PAWN); // e2
         fen.set_square(Square(60), WHITE_KING); // e1
-        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_square(Square(4), BLACK_KING); // e8
         fen.set_halfmove_cnt(5);
 
         let m: Move = "e2-e4".parse().unwrap();
@@ -1475,7 +1816,7 @@ mod tests {
         fen.set_square(Square(36), WHITE_PAWN); // e4
         fen.set_square(Square(27), BLACK_PAWN); // d5
         fen.set_square(Square(60), WHITE_KING); // e1
-        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_square(Square(4), BLACK_KING); // e8
         fen.set_halfmove_cnt(5);
 
         let m: Move = "e4-d5".parse().unwrap();
@@ -1488,7 +1829,7 @@ mod tests {
     fn halfmove_increment_on_quiet_move() {
         let mut fen = empty_fen();
         fen.set_square(Square(60), WHITE_KING); // e1
-        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_square(Square(4), BLACK_KING); // e8
 
         let m: Move = "e1-e2".parse().unwrap();
         fen.try_move(m).unwrap();
@@ -1500,7 +1841,7 @@ mod tests {
     fn fullmove_increment_after_black() {
         let mut fen = empty_fen();
         fen.set_square(Square(60), WHITE_KING); // e1
-        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_square(Square(4), BLACK_KING); // e8
         fen.set_fullmove_cnt(1);
 
         // White moves
@@ -1519,7 +1860,7 @@ mod tests {
         let mut fen = empty_fen();
         fen.set_square(Square(52), WHITE_PAWN); // e2
         fen.set_square(Square(60), WHITE_KING); // e1
-        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_square(Square(4), BLACK_KING); // e8
 
         let m: Move = "e2-e4".parse().unwrap();
         fen.try_move(m).unwrap();
@@ -1535,7 +1876,7 @@ mod tests {
         fen.set_square(Square(52), WHITE_PAWN); // e2
         fen.set_square(Square(11), BLACK_PAWN); // d7
         fen.set_square(Square(60), WHITE_KING); // e1
-        fen.set_square(Square(4), BLACK_KING);  // e8
+        fen.set_square(Square(4), BLACK_KING); // e8
 
         // White plays e2-e4 (sets ep target to e3)
         let m1: Move = "e2-e4".parse().unwrap();
@@ -1555,17 +1896,13 @@ mod tests {
         let mut fen = empty_fen();
         fen.set_square(Square(60), WHITE_KING); // e1
         fen.set_square(Square(52), WHITE_ROOK); // e2 — pinned
-        fen.set_square(Square(4), BLACK_ROOK);  // e8 — pinning
-        fen.set_square(Square(0), BLACK_KING);  // a8
+        fen.set_square(Square(4), BLACK_ROOK); // e8 — pinning
+        fen.set_square(Square(0), BLACK_KING); // a8
 
         let moves = fen.all_valid_moves_from_square(Square(52));
         // Rook can only move along the e-file (e3-e7), not horizontally
         for m in &moves {
-            assert_eq!(
-                sq_file(m.dst()),
-                4,
-                "pinned rook can only stay on e-file"
-            );
+            assert_eq!(sq_file(m.dst()), 4, "pinned rook can only stay on e-file");
         }
         // Should have moves along the e-file
         assert!(!moves.is_empty());
@@ -1576,7 +1913,7 @@ mod tests {
         let mut fen = empty_fen();
         fen.set_square(Square(60), WHITE_KING); // e1
         fen.set_square(Square(48), BLACK_ROOK); // a2
-        fen.set_square(Square(0), BLACK_KING);  // a8
+        fen.set_square(Square(0), BLACK_KING); // a8
 
         let moves = fen.all_valid_moves_from_square(Square(60));
         // King cannot move to d2, e2, f2 — attacked by black rook on a2
@@ -1596,8 +1933,8 @@ mod tests {
         fen.set_square(Square(60), WHITE_KING); // e1
         fen.set_square(Square(28), WHITE_PAWN); // e5 — pinned
         fen.set_square(Square(11), BLACK_PAWN); // d7
-        fen.set_square(Square(4), BLACK_ROOK);  // e8 — pinning
-        fen.set_square(Square(0), BLACK_KING);  // a8
+        fen.set_square(Square(4), BLACK_ROOK); // e8 — pinning
+        fen.set_square(Square(0), BLACK_KING); // a8
 
         // Black plays d7-d5 (double push)
         fen.set_active_player(BLACK_MOVE);
@@ -1624,11 +1961,17 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(fen.square_bits(Square(60)), WHITE_KING); // e1
-        assert_eq!(fen.square_bits(Square(4)), BLACK_KING);  // e8
+        assert_eq!(fen.square_bits(Square(4)), BLACK_KING); // e8
         assert_eq!(fen.square_bits(Square(52)), WHITE_PAWN); // e2
         assert_eq!(fen.square_bits(Square(12)), BLACK_PAWN); // e7
         assert_eq!(fen.active_player_bit(), WHITE_MOVE);
-        assert_eq!(fen.castle_bits(), WHITE_KINGSIDE_CASTLE | WHITE_QUEENSIDE_CASTLE | BLACK_KINGSIDE_CASTLE | BLACK_QUEENSIDE_CASTLE);
+        assert_eq!(
+            fen.castle_bits(),
+            WHITE_KINGSIDE_CASTLE
+                | WHITE_QUEENSIDE_CASTLE
+                | BLACK_KINGSIDE_CASTLE
+                | BLACK_QUEENSIDE_CASTLE
+        );
         assert_eq!(fen.halfmove_cnt(), 0);
         assert_eq!(fen.fullmove_cnt(), 1);
     }
@@ -1639,7 +1982,7 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(fen.square_bits(Square(60)), WHITE_KING); // e1
-        assert_eq!(fen.square_bits(Square(4)), BLACK_KING);  // e8
+        assert_eq!(fen.square_bits(Square(4)), BLACK_KING); // e8
         assert_eq!(fen.active_player_bit(), WHITE_MOVE);
         assert_eq!(fen.halfmove_cnt(), 0);
         assert_eq!(fen.fullmove_cnt(), 1);
@@ -1650,7 +1993,10 @@ mod tests {
         let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
-        assert_eq!(fen.to_fen(), "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        assert_eq!(
+            fen.to_fen(),
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        );
     }
 
     #[test]
@@ -1658,7 +2004,10 @@ mod tests {
         let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
             .parse()
             .unwrap();
-        assert_eq!(fen.to_fen(), "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        assert_eq!(
+            fen.to_fen(),
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+        );
     }
 
     #[test]
@@ -1666,7 +2015,10 @@ mod tests {
         let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w - - 0 1"
             .parse()
             .unwrap();
-        assert_eq!(fen.to_fen(), "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w - - 0 1");
+        assert_eq!(
+            fen.to_fen(),
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w - - 0 1"
+        );
     }
 
     #[test]
@@ -1674,7 +2026,10 @@ mod tests {
         let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"
             .parse()
             .unwrap();
-        assert_eq!(fen.to_fen(), "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1");
+        assert_eq!(
+            fen.to_fen(),
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"
+        );
     }
 
     #[test]
@@ -1682,28 +2037,227 @@ mod tests {
         let fen: Fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
             .parse()
             .unwrap();
-        assert_eq!(fen.to_fen(), "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1");
+        assert_eq!(
+            fen.to_fen(),
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+        );
     }
 
     #[test]
     fn fen_reject_invalid() {
         // Missing fields
-        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0".parse::<Fen>().is_err());
+        assert!(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0"
+                .parse::<Fen>()
+                .is_err()
+        );
         // Invalid piece letter
-        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNX w KQkq - 0 1".parse::<Fen>().is_err());
+        assert!(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNX w KQkq - 0 1"
+                .parse::<Fen>()
+                .is_err()
+        );
         // Invalid active color
-        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR x KQkq - 0 1".parse::<Fen>().is_err());
+        assert!(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR x KQkq - 0 1"
+                .parse::<Fen>()
+                .is_err()
+        );
         // Invalid castling
-        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkqX - 0 1".parse::<Fen>().is_err());
+        assert!(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkqX - 0 1"
+                .parse::<Fen>()
+                .is_err()
+        );
         // Invalid en passant
-        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq e9 0 1".parse::<Fen>().is_err());
+        assert!(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq e9 0 1"
+                .parse::<Fen>()
+                .is_err()
+        );
         // Invalid halfmove
-        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - x 1".parse::<Fen>().is_err());
+        assert!(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - x 1"
+                .parse::<Fen>()
+                .is_err()
+        );
         // Invalid fullmove
-        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 0".parse::<Fen>().is_err());
+        assert!(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 0"
+                .parse::<Fen>()
+                .is_err()
+        );
         // Two white kings
-        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNK w KQkq - 0 1".parse::<Fen>().is_err());
+        assert!(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNK w KQkq - 0 1"
+                .parse::<Fen>()
+                .is_err()
+        );
         // Pawn on rank 8
-        assert!("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNP w KQkq - 0 1".parse::<Fen>().is_err());
+        assert!(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNP w KQkq - 0 1"
+                .parse::<Fen>()
+                .is_err()
+        );
+    }
+
+    // Phase 4 tests
+
+    #[test]
+    fn san_parse_quiet_move() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("e4").unwrap();
+        assert_eq!(m.src(), 52); // e2
+        assert_eq!(m.dst(), 36); // e4
+    }
+
+    #[test]
+    fn san_parse_capture() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("Nf3").unwrap();
+        assert_eq!(m.src(), 62); // g1
+        assert_eq!(m.dst(), 45); // f3
+    }
+
+    #[test]
+    fn san_parse_pawn_capture() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("dxe4").unwrap();
+        assert_eq!(m.src(), 27); // d5
+        assert_eq!(m.dst(), 36); // e4
+    }
+
+    #[test]
+    fn san_parse_promotion() {
+        let fen: Fen = "8/P7/8/8/8/8/8/k6K w - - 0 1".parse().unwrap();
+        let m = fen.parse_san("a8=Q").unwrap();
+        assert_eq!(m.src(), 8); // a7
+        assert_eq!(m.dst(), 0); // a8
+        assert_eq!(m.promo(), QUEEN_TYPE);
+    }
+
+    #[test]
+    fn san_parse_castling_kingside() {
+        let fen: Fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("O-O").unwrap();
+        assert_eq!(m.src(), 60); // e1
+        assert_eq!(m.dst(), 62); // g1
+    }
+
+    #[test]
+    fn san_parse_castling_queenside() {
+        let fen: Fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("O-O-O").unwrap();
+        assert_eq!(m.src(), 60); // e1
+        assert_eq!(m.dst(), 58); // c1
+    }
+
+    #[test]
+    fn san_parse_check() {
+        // Position where Qh5+ is check (e2/f2 pawns moved out of the way, f7 pawn removed)
+        let fen: Fen = "rnbqkbnr/pppp2pp/8/8/8/8/PPPP2PP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("Qh5+").unwrap();
+        assert_eq!(m.src(), 59); // d1
+        assert_eq!(m.dst(), 31); // h5
+    }
+
+    #[test]
+    fn san_parse_knight_disambiguation() {
+        // Two knights can move to f3: g1 and e5
+        let fen: Fen = "8/8/8/4N3/8/8/5N2/k6K w - - 0 1".parse().unwrap();
+        let m = fen.parse_san("Nef3").unwrap();
+        assert_eq!(m.src(), 28); // e5
+        assert_eq!(m.dst(), 45); // f3
+    }
+
+    #[test]
+    fn san_parse_rook_disambiguation_by_rank() {
+        // Two rooks can move to d3: d1 and d5
+        let fen: Fen = "7k/8/8/3R4/8/8/8/3R3K w - - 0 1".parse().unwrap();
+        let m = fen.parse_san("R1d3").unwrap();
+        assert_eq!(m.src(), 59); // d1
+        assert_eq!(m.dst(), 43); // d3
+    }
+
+    #[test]
+    fn san_format_quiet_move() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("e4").unwrap();
+        assert_eq!(fen.to_san(&m), "e4");
+    }
+
+    #[test]
+    fn san_format_capture() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("Nf3").unwrap();
+        assert_eq!(fen.to_san(&m), "Nf3");
+    }
+
+    #[test]
+    fn san_format_promotion() {
+        // Queen on a8 attacks black king on a1 (same file) — this IS check
+        let fen: Fen = "8/P7/8/8/8/8/8/k6K w - - 0 1".parse().unwrap();
+        let m = fen.parse_san("a8=Q").unwrap();
+        assert_eq!(fen.to_san(&m), "a8=Q+");
+    }
+
+    #[test]
+    fn san_format_castling() {
+        let fen: Fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("O-O").unwrap();
+        assert_eq!(fen.to_san(&m), "O-O");
+    }
+
+    #[test]
+    fn san_format_check() {
+        let fen: Fen = "rnbqkbnr/pppp2pp/8/8/8/8/PPPP2PP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("Qh5+").unwrap();
+        assert_eq!(fen.to_san(&m), "Qh5+");
+    }
+
+    #[test]
+    fn san_format_knight_disambiguation() {
+        // Knights on e5 and g1 can both move to f3
+        let fen: Fen = "7k/8/8/4N3/8/8/8/6NK w - - 0 1".parse().unwrap();
+        let m = fen.parse_san("Nef3").unwrap();
+        assert_eq!(fen.to_san(&m), "Nef3");
+    }
+
+    #[test]
+    fn san_roundtrip_startpos() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("e4").unwrap();
+        assert_eq!(fen.to_san(&m), "e4");
+    }
+
+    #[test]
+    fn san_roundtrip_midgame() {
+        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("O-O").unwrap();
+        assert_eq!(fen.to_san(&m), "O-O");
     }
 }
