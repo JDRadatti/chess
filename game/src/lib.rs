@@ -6,7 +6,10 @@ use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
 
 const SQUARE_CNT: usize = 64;
-const MAX_HALFMOVE_CNT: u8 = 75;
+/// The halfmove clock is stored in 7 bits.
+const MAX_HALFMOVE_CNT: u8 = 127;
+/// 50 full moves without a pawn move or capture = 100 plies.
+const FIFTY_MOVE_RULE_PLIES: u8 = 100;
 
 // Piece type extraction from 4-bit piece encoding
 const fn piece_type(piece_bits: u8) -> u8 {
@@ -57,26 +60,13 @@ const NO_CASTLE: u8 = 0b0000;
 const BLACK_MOVE: u8 = 1;
 const WHITE_MOVE: u8 = 0;
 
-// En passant
-
-const NO_EN_PASSANT: u8 = 0;
-const HAS_EN_PASSANT: u8 = 1;
-
-// Files
-
-const FILE_A: u8 = 0b001;
-const FILE_B: u8 = 0b010;
-const FILE_C: u8 = 0b011;
-const FILE_D: u8 = 0b100;
-const FILE_E: u8 = 0b101;
-const FILE_F: u8 = 0b111;
-
 // Error
 
 #[derive(Debug)]
 pub enum Error {
     InvalidFenString(String),
     InvalidMove,
+    GameOver,
 }
 
 impl Display for Error {
@@ -84,12 +74,107 @@ impl Display for Error {
         match self {
             Error::InvalidFenString(fen_string) => format!("invalid fen string: {fen_string}"),
             Error::InvalidMove => format!("invalid move"),
+            Error::GameOver => format!("game is over"),
         }
         .fmt(f)
     }
 }
 
-/// Fen representation of a chess board state.
+// Public piece types
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Color {
+    White,
+    Black,
+}
+
+impl Color {
+    pub const fn opponent(self) -> Self {
+        match self {
+            Color::White => Color::Black,
+            Color::Black => Color::White,
+        }
+    }
+
+    const fn from_bit(bit: u8) -> Self {
+        if bit == WHITE_MOVE {
+            Color::White
+        } else {
+            Color::Black
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PieceKind {
+    Pawn,
+    Knight,
+    Bishop,
+    Rook,
+    Queen,
+    King,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Piece {
+    pub color: Color,
+    pub kind: PieceKind,
+}
+
+impl Piece {
+    fn from_bits(bits: u8) -> Option<Self> {
+        let kind = match piece_type(bits) {
+            PAWN_TYPE => PieceKind::Pawn,
+            KNIGHT_TYPE => PieceKind::Knight,
+            BISHOP_TYPE => PieceKind::Bishop,
+            ROOK_TYPE => PieceKind::Rook,
+            QUEEN_TYPE => PieceKind::Queen,
+            KING_TYPE => PieceKind::King,
+            _ => return None,
+        };
+        Some(Self {
+            color: Color::from_bit(piece_color(bits)),
+            kind,
+        })
+    }
+
+    /// FEN letter for this piece: uppercase for white, lowercase for black.
+    pub const fn symbol(self) -> char {
+        let ch = match self.kind {
+            PieceKind::Pawn => 'p',
+            PieceKind::Knight => 'n',
+            PieceKind::Bishop => 'b',
+            PieceKind::Rook => 'r',
+            PieceKind::Queen => 'q',
+            PieceKind::King => 'k',
+        };
+        match self.color {
+            Color::White => ch.to_ascii_uppercase(),
+            Color::Black => ch,
+        }
+    }
+}
+
+// Game status
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Ongoing,
+    Checkmate { winner: Color },
+    Draw(DrawReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawReason {
+    Stalemate,
+    InsufficientMaterial,
+    /// Applied automatically after 100 plies without a pawn move or capture.
+    FiftyMoveRule,
+    /// Applied automatically on the third occurrence. Only detected by [`Game`].
+    ThreefoldRepetition,
+}
+
+/// A chess position: what a FEN string describes.
 ///
 /// Consists of six space-separated fields:
 /// 1. Piece placement. Slash separated list of ranks, tarting with rank 8. Pieces are represented
@@ -100,38 +185,125 @@ impl Display for Error {
 ///    black queenside. Hyphen if neither side can castle.
 /// 4. En Passant target square. The square "behind" a pawn that just moved two squares. Hyphen if
 ///    no valid en passant square exists.
-/// 5. Halfmoves. Number of moves since the last pawn advance or piece capture. Used to enforce 50
-///    move rule (after 50 moves, either side can declare a draw, after 75 moves it is automatically
-///    a draw.)
+/// 5. Halfmoves. Number of plies since the last pawn advance or piece capture. Used to enforce
+///    the 50 move rule (100 plies).
 /// 6. Fullmoves. Starts at 1 and increments every black move.
 ///
 /// # Representation
 ///
-/// Fen[0..=31] = board squares.
+/// Position[0..=31] = board squares.
 ///     Each square takes up 4 bits (1 for piece color, 3 for piece type, 0000 = empty)
-/// Fen[32..=34] =
-///     Byte 32:  [castling:4][has_en_passant:1][en_passant_file:3]
-///     Byte 33:  [active_player:1][halfmove_cnt:7]
-///     Byte 34:  [fullmove_cnt:8]
+/// Position[32..=35] =
+///     Byte 32:     [castling:4][has_en_passant:1][en_passant_file:3]
+///     Byte 33:     [active_player:1][halfmove_cnt:7]
+///     Byte 34-35:  [fullmove_cnt:16] (little endian)
 #[derive(Debug, Clone, Copy)]
-pub struct Fen([u8; 35]);
+pub struct Position([u8; 36]);
 
-impl Fen {
+impl Position {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn try_move(&mut self, m: Move) -> Result<(), Error> {
-        let src = m.src();
-        let dst = m.dst();
+    /// Plays `m` if it is legal in this position.
+    pub fn apply_move(&mut self, m: Move) -> Result<(), Error> {
+        if !self.legal_moves_from(Square(m.src())).contains(&m) {
+            return Err(Error::InvalidMove);
+        }
+        self.apply_move_unchecked(m);
+        Ok(())
+    }
 
-        for candidate in self.all_valid_moves_from_square(Square(src)) {
-            if m == candidate {
-                self.apply_move_unchecked(m);
-                return Ok(());
+    /// The piece on `sq`, if any.
+    pub fn piece_at(&self, sq: Square) -> Option<Piece> {
+        Piece::from_bits(self.square_bits(sq))
+    }
+
+    pub fn side_to_move(&self) -> Color {
+        Color::from_bit(self.active_player_bit())
+    }
+
+    /// All legal moves for the side to move.
+    pub fn legal_moves(&self) -> Vec<Move> {
+        let mut moves = vec![];
+        for i in 0..SQUARE_CNT {
+            moves.extend(self.legal_moves_from(Square(i as u8)));
+        }
+        moves
+    }
+
+    /// Is the side to move in check?
+    pub fn is_check(&self) -> bool {
+        let active_player = self.active_player_bit();
+        self.is_attacked_by(self.king_square(active_player), active_player ^ 1)
+    }
+
+    /// Result of the position on its own. Threefold repetition needs move history, so it is
+    /// only reported by [`Game::status`].
+    pub fn status(&self) -> Status {
+        if !self.has_legal_move() {
+            return if self.is_check() {
+                Status::Checkmate {
+                    winner: self.side_to_move().opponent(),
+                }
+            } else {
+                Status::Draw(DrawReason::Stalemate)
+            };
+        }
+        if self.is_insufficient_material() {
+            return Status::Draw(DrawReason::InsufficientMaterial);
+        }
+        if self.halfmove_cnt() >= FIFTY_MOVE_RULE_PLIES {
+            return Status::Draw(DrawReason::FiftyMoveRule);
+        }
+        Status::Ongoing
+    }
+
+    fn has_legal_move(&self) -> bool {
+        (0..SQUARE_CNT as u8).any(|sq| !self.legal_moves_from(Square(sq)).is_empty())
+    }
+
+    /// Neither side can possibly checkmate: K vs K, K+minor vs K, or only bishops that all
+    /// stand on the same square color.
+    fn is_insufficient_material(&self) -> bool {
+        let mut knights = 0;
+        let mut bishop_square_colors = [false; 2];
+        for sq in 0..SQUARE_CNT as u8 {
+            match piece_type(self.square_bits(Square(sq))) {
+                EMPTY | KING_TYPE => {}
+                KNIGHT_TYPE => knights += 1,
+                BISHOP_TYPE => {
+                    bishop_square_colors[((sq_rank(sq) + sq_file(sq)) % 2) as usize] = true;
+                }
+                _ => return false,
             }
         }
-        Err(Error::InvalidMove)
+        let has_bishops = bishop_square_colors[0] || bishop_square_colors[1];
+        let bishops_mixed = bishop_square_colors[0] && bishop_square_colors[1];
+        match knights {
+            0 => !bishops_mixed,
+            1 => !has_bishops,
+            _ => false,
+        }
+    }
+
+    /// Identity of the position for repetition: placement, side to move, castling rights, and
+    /// the en passant file only when an en passant capture is actually legal.
+    fn repetition_key(&self) -> [u8; 34] {
+        let mut key = [0u8; 34];
+        key[..32].copy_from_slice(&self.0[..32]);
+        let ep_bits = match self.en_passant_target(self.active_player_bit()) {
+            Some(ep_sq) if self.legal_moves().iter().any(|m| {
+                m.dst() == ep_sq && piece_type(self.square_bits(Square(m.src()))) == PAWN_TYPE
+            }) =>
+            {
+                self.en_passant_bits()
+            }
+            _ => 0,
+        };
+        key[32] = (self.castle_bits() << 4) | ep_bits;
+        key[33] = self.active_player_bit();
+        key
     }
 
     pub fn to_fen(&self) -> String {
@@ -256,25 +428,7 @@ impl Fen {
         if suffix.is_none() {
             return Ok(());
         }
-        let expected = {
-            let mut test_fen = *self;
-            test_fen.apply_move_unchecked(m);
-            let opponent = self.active_player_bit() ^ 1;
-            let king_sq = test_fen.king_square(opponent);
-            if test_fen.is_attacked_by(king_sq, self.active_player_bit()) {
-                let has_legal = (0..64).any(|sq| {
-                    !test_fen.all_valid_moves_from_square(Square(sq)).is_empty()
-                });
-                if has_legal {
-                    Some('+')
-                } else {
-                    Some('#')
-                }
-            } else {
-                None
-            }
-        };
-        if suffix == expected {
+        if suffix == self.check_suffix(m) {
             Ok(())
         } else {
             Err(Error::InvalidMove)
@@ -470,7 +624,7 @@ impl Fen {
         let active_player = self.active_player_bit();
         let mut matches = vec![];
 
-        for m in self.all_valid_moves() {
+        for m in self.legal_moves() {
             if m.dst() != dst || m.promo() != promo {
                 continue;
             }
@@ -571,7 +725,7 @@ impl Fen {
 
             // Disambiguation
             let mut same_type_moves = vec![];
-            for other_m in self.all_valid_moves() {
+            for other_m in self.legal_moves() {
                 if other_m.dst() == dst && other_m.src() != src {
                     let other_bits = self.square_bits(Square(other_m.src()));
                     if piece_type(other_bits) == pt {
@@ -609,24 +763,24 @@ impl Fen {
             result.push((b'1' + (7 - dst_rank) as u8) as char);
         }
 
-        // Check/mate suffix
-        let mut test_fen = *self;
-        test_fen.apply_move_unchecked(*m);
-        let opponent = active_player ^ 1;
-        let king_sq = test_fen.king_square(opponent);
-        if test_fen.is_attacked_by(king_sq, active_player) {
-            // Check if it's checkmate
-            let has_legal_moves = (0..64).any(|sq| {
-                !test_fen.all_valid_moves_from_square(Square(sq)).is_empty()
-            });
-            if has_legal_moves {
-                result.push('+');
-            } else {
-                result.push('#');
-            }
+        if let Some(suffix) = self.check_suffix(*m) {
+            result.push(suffix);
         }
 
         result
+    }
+
+    /// `+` if `m` gives check, `#` if it gives checkmate.
+    fn check_suffix(&self, m: Move) -> Option<char> {
+        let mut after = *self;
+        after.apply_move_unchecked(m);
+        if !after.is_check() {
+            None
+        } else if after.has_legal_move() {
+            Some('+')
+        } else {
+            Some('#')
+        }
     }
 
     fn apply_move_unchecked(&mut self, m: Move) {
@@ -737,14 +891,6 @@ impl Fen {
         }
     }
 
-    fn all_valid_moves(&self) -> Vec<Move> {
-        let mut moves = vec![];
-        for i in 0..SQUARE_CNT {
-            moves.extend(self.all_valid_moves_from_square(Square(i as u8)));
-        }
-        moves
-    }
-
     fn king_square(&self, color: u8) -> u8 {
         for sq in 0..64 {
             let bits = self.square_bits(Square(sq));
@@ -792,21 +938,20 @@ impl Fen {
         self.0[33] & 0b01111111
     }
 
-    fn fullmove_cnt(&self) -> u8 {
-        self.0[34]
+    fn fullmove_cnt(&self) -> u16 {
+        u16::from_le_bytes([self.0[34], self.0[35]])
     }
 
     fn inc_halfmove_cnt(&mut self) {
-        // NOTE: if halfmove_cnt == 127, self.0[33] = 0b111111111 OR 0b011111111.
-        // In this cases, adding one will either panic or change active player and reset
-        // halfmove_cnt to 0. Both cases are not good. This should never happen because game ends in
-        // draw when halfmove_cnt == 75.
-        // assert!((self.0[33] & 0b011111111) < 128, "halfmove overflow.");
-        self.0[33] += 1
+        // Saturate so the clock can never carry into the active player bit.
+        let cnt = self.halfmove_cnt();
+        if cnt < MAX_HALFMOVE_CNT {
+            self.set_halfmove_cnt(cnt + 1);
+        }
     }
 
     fn inc_fullmove_cnt(&mut self) {
-        self.0[34] += 1
+        self.set_fullmove_cnt(self.fullmove_cnt().saturating_add(1));
     }
 
     fn set_castle_bits(&mut self, bits: u8) {
@@ -826,8 +971,8 @@ impl Fen {
         self.0[33] = (self.0[33] & 0b10000000) | (cnt & 0b01111111);
     }
 
-    fn set_fullmove_cnt(&mut self, cnt: u8) {
-        self.0[34] = cnt;
+    fn set_fullmove_cnt(&mut self, cnt: u16) {
+        [self.0[34], self.0[35]] = cnt.to_le_bytes();
     }
 
     /// Bitboard of all occupied squares (both colors).
@@ -924,7 +1069,8 @@ impl Fen {
 
     // NOTE: will probably need to optimize this.
     // Max number of moves is 218
-    fn all_valid_moves_from_square(&self, s: Square) -> Vec<Move> {
+    /// Legal moves for the piece on `s`. Empty if the square is empty or holds an opponent's piece.
+    pub fn legal_moves_from(&self, s: Square) -> Vec<Move> {
         let mut moves = Vec::with_capacity(8);
         let active_player = self.active_player_bit();
         let square_bits = self.square_bits(s);
@@ -1132,7 +1278,7 @@ fn is_promotion_rank(sq: u8, color: u8) -> bool {
 }
 
 /// Starting FEN: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
-impl Default for Fen {
+impl Default for Position {
     fn default() -> Self {
         Self([
             // Rank 8: rnbqkbnr
@@ -1183,12 +1329,14 @@ impl Default for Fen {
                 << 4,
             // Implicit halfmove_clock
             WHITE_MOVE << 7,
-            1, // fullmove_cnt
+            // fullmove_cnt = 1 (little endian)
+            1,
+            0,
         ])
     }
 }
 
-impl FromStr for Fen {
+impl FromStr for Position {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -1301,14 +1449,14 @@ impl FromStr for Fen {
 
         // Parse fullmove counter
         let fullmove = fields[5]
-            .parse::<u8>()
+            .parse::<u16>()
             .map_err(|_| Error::InvalidFenString(s.to_string()))?;
         if fullmove == 0 {
             return Err(Error::InvalidFenString(s.to_string()));
         }
 
-        // Build the Fen
-        let mut fen = Fen([0u8; 35]);
+        // Build the position
+        let mut fen = Position([0u8; 36]);
 
         // Set board squares
         for sq in 0..64 {
@@ -1425,8 +1573,8 @@ impl FromStr for Fen {
 /// # Representation
 ///
 /// Move[0..=3] = Promotion piece. (0000 for no promotion)
-/// Fen[4..=10] = src square.
-/// Fen[11..=16] = dst square.
+/// Move[4..=9] = src square.
+/// Move[10..=15] = dst square.
 ///
 /// Total = 16 bits.
 ///
@@ -1512,36 +1660,20 @@ impl FromStr for Move {
     }
 }
 
-/// Apply a move to a position, returning the new position.
-///
-/// Returns `Err(Error::InvalidMove)` if the move is not legal.
-pub fn apply_move(fen: &Fen, m: Move) -> Result<Fen, Error> {
-    let mut new_fen = *fen;
-    new_fen.try_move(m)?;
-    Ok(new_fen)
-}
-
-/// Get all legal moves from a given square.
-///
-/// Returns an empty vector if the square is empty or contains an opponent's piece.
-pub fn moves_from_square(fen: &Fen, sq: Square) -> Vec<Move> {
-    fen.all_valid_moves_from_square(sq)
-}
-
 /// Count the number of leaf nodes in the move tree at the given depth.
 ///
 /// Perft(0) = 1, Perft(1) = number of legal moves, Perft(2) = number of
 /// legal move pairs, etc.
-pub fn perft(fen: &Fen, depth: u32) -> u64 {
+pub fn perft(position: &Position, depth: u32) -> u64 {
     if depth == 0 {
         return 1;
     }
 
     let mut count = 0u64;
-    for m in fen.all_valid_moves() {
-        let mut new_fen = *fen;
-        new_fen.apply_move_unchecked(m);
-        count += perft(&new_fen, depth - 1);
+    for m in position.legal_moves() {
+        let mut next = *position;
+        next.apply_move_unchecked(m);
+        count += perft(&next, depth - 1);
     }
     count
 }
@@ -1550,28 +1682,85 @@ pub fn perft(fen: &Fen, depth: u32) -> u64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Square(pub u8);
 
-//
-// TESTING
-//
+/// A game in progress: the current position plus the history needed for repetition.
+#[derive(Debug, Clone)]
+pub struct Game {
+    position: Position,
+    moves: Vec<Move>,
+    /// Repetition key of every position reached, including the starting one.
+    history: Vec<[u8; 34]>,
+}
 
-fn print_memory_representation<T: std::fmt::Debug>(t: T) {
-    print!("type={} value={t:?}: ", std::any::type_name::<T>());
-    let start = &t as *const _ as *const u8;
-    for i in 0..std::mem::size_of::<T>() {
-        print!("{:02x} ", unsafe { *start.offset(i as isize) });
+impl Game {
+    pub fn new() -> Self {
+        Self::from_position(Position::default())
     }
-    println!();
+
+    pub fn from_position(position: Position) -> Self {
+        Self {
+            position,
+            moves: vec![],
+            history: vec![position.repetition_key()],
+        }
+    }
+
+    pub fn position(&self) -> &Position {
+        &self.position
+    }
+
+    /// Moves played since the starting position.
+    pub fn moves(&self) -> &[Move] {
+        &self.moves
+    }
+
+    /// Plays `m` if the game is still ongoing and the move is legal.
+    pub fn play(&mut self, m: Move) -> Result<(), Error> {
+        if self.status() != Status::Ongoing {
+            return Err(Error::GameOver);
+        }
+        self.position.apply_move(m)?;
+        self.moves.push(m);
+        self.history.push(self.position.repetition_key());
+        Ok(())
+    }
+
+    pub fn status(&self) -> Status {
+        let status = self.position.status();
+        if status != Status::Ongoing {
+            return status;
+        }
+        let current = self.history.last().expect("history always has the start position");
+        if self.history.iter().filter(|key| *key == current).count() >= 3 {
+            return Status::Draw(DrawReason::ThreefoldRepetition);
+        }
+        Status::Ongoing
+    }
+}
+
+impl Default for Game {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn print_memory_representation<T: std::fmt::Debug>(t: T) {
+        print!("type={} value={t:?}: ", std::any::type_name::<T>());
+        let start = &t as *const _ as *const u8;
+        for i in 0..std::mem::size_of::<T>() {
+            print!("{:02x} ", unsafe { *start.offset(i as isize) });
+        }
+        println!();
+    }
+
     #[test]
     fn check_size() {
-        let default = Fen::new();
-        dbg!("{:?}", print_memory_representation(default));
-        assert_eq!(std::mem::size_of::<Fen>(), 35);
+        let default = Position::new();
+        print_memory_representation(default);
+        assert_eq!(std::mem::size_of::<Position>(), 36);
         assert_eq!(std::mem::size_of::<Move>(), 2);
     }
 
@@ -1690,8 +1879,8 @@ mod tests {
 
     #[test]
     fn starting_position_20_moves() {
-        let fen = Fen::default();
-        let moves = fen.all_valid_moves();
+        let fen = Position::default();
+        let moves = fen.legal_moves();
         assert_eq!(
             moves.len(),
             20,
@@ -1701,10 +1890,10 @@ mod tests {
 
     #[test]
     fn starting_position_pawn_moves() {
-        let fen = Fen::default();
+        let fen = Position::default();
         // White to move: 16 pawn pushes + 4 knight moves = 20
         let pawn_moves: Vec<_> = (0..64)
-            .flat_map(|sq| fen.all_valid_moves_from_square(Square(sq)))
+            .flat_map(|sq| fen.legal_moves_from(Square(sq)))
             .filter(|m| {
                 let bits = fen.square_bits(Square(m.src()));
                 piece_type(bits) == PAWN_TYPE
@@ -1715,9 +1904,9 @@ mod tests {
 
     #[test]
     fn starting_position_knight_moves() {
-        let fen = Fen::default();
+        let fen = Position::default();
         let knight_moves: Vec<_> = (0..64)
-            .flat_map(|sq| fen.all_valid_moves_from_square(Square(sq)))
+            .flat_map(|sq| fen.legal_moves_from(Square(sq)))
             .filter(|m| {
                 let bits = fen.square_bits(Square(m.src()));
                 piece_type(bits) == KNIGHT_TYPE
@@ -1787,8 +1976,8 @@ mod tests {
 
     // Phase 1 tests
 
-    fn empty_fen() -> Fen {
-        let mut fen = Fen::new();
+    fn empty_fen() -> Position {
+        let mut fen = Position::new();
         for sq in 0..64 {
             fen.set_square(Square(sq), EMPTY);
         }
@@ -1808,7 +1997,7 @@ mod tests {
         fen.set_square(Square(0), BLACK_KING); // a8
 
         let m: Move = "e7-e8-q".parse().unwrap();
-        fen.try_move(m).unwrap();
+        fen.apply_move(m).unwrap();
 
         assert_eq!(fen.square_bits(Square(4)), WHITE_QUEEN); // e8
         assert_eq!(fen.square_bits(Square(12)), EMPTY); // e7
@@ -1826,11 +2015,11 @@ mod tests {
         // Black plays d7-d5 (double push)
         fen.set_active_player(BLACK_MOVE);
         let m1: Move = "d7-d5".parse().unwrap();
-        fen.try_move(m1).unwrap();
+        fen.apply_move(m1).unwrap();
 
         // White plays e5xd6 (en passant)
         let m2: Move = "e5-d6".parse().unwrap();
-        fen.try_move(m2).unwrap();
+        fen.apply_move(m2).unwrap();
 
         assert_eq!(fen.square_bits(Square(19)), WHITE_PAWN); // d6
         assert_eq!(fen.square_bits(Square(27)), EMPTY); // d5 (captured pawn removed)
@@ -1847,7 +2036,7 @@ mod tests {
         fen.set_castle_bits(WHITE_KINGSIDE_CASTLE);
 
         let m: Move = "e1-g1".parse().unwrap();
-        fen.try_move(m).unwrap();
+        fen.apply_move(m).unwrap();
 
         assert_eq!(fen.square_bits(Square(62)), WHITE_KING); // g1
         assert_eq!(fen.square_bits(Square(61)), WHITE_ROOK); // f1
@@ -1865,7 +2054,7 @@ mod tests {
         fen.set_castle_bits(WHITE_QUEENSIDE_CASTLE);
 
         let m: Move = "e1-c1".parse().unwrap();
-        fen.try_move(m).unwrap();
+        fen.apply_move(m).unwrap();
 
         assert_eq!(fen.square_bits(Square(58)), WHITE_KING); // c1
         assert_eq!(fen.square_bits(Square(59)), WHITE_ROOK); // d1
@@ -1886,7 +2075,7 @@ mod tests {
         // Black plays a8xa1 (captures rook)
         fen.set_active_player(BLACK_MOVE);
         let m: Move = "a8-a1".parse().unwrap();
-        fen.try_move(m).unwrap();
+        fen.apply_move(m).unwrap();
 
         assert_eq!(fen.castle_bits() & WHITE_QUEENSIDE_CASTLE, 0);
     }
@@ -1900,7 +2089,7 @@ mod tests {
         fen.set_halfmove_cnt(5);
 
         let m: Move = "e2-e4".parse().unwrap();
-        fen.try_move(m).unwrap();
+        fen.apply_move(m).unwrap();
 
         assert_eq!(fen.halfmove_cnt(), 0);
     }
@@ -1915,7 +2104,7 @@ mod tests {
         fen.set_halfmove_cnt(5);
 
         let m: Move = "e4-d5".parse().unwrap();
-        fen.try_move(m).unwrap();
+        fen.apply_move(m).unwrap();
 
         assert_eq!(fen.halfmove_cnt(), 0);
     }
@@ -1927,7 +2116,7 @@ mod tests {
         fen.set_square(Square(4), BLACK_KING); // e8
 
         let m: Move = "e1-e2".parse().unwrap();
-        fen.try_move(m).unwrap();
+        fen.apply_move(m).unwrap();
 
         assert_eq!(fen.halfmove_cnt(), 1);
     }
@@ -1941,12 +2130,12 @@ mod tests {
 
         // White moves
         let m1: Move = "e1-e2".parse().unwrap();
-        fen.try_move(m1).unwrap();
+        fen.apply_move(m1).unwrap();
         assert_eq!(fen.fullmove_cnt(), 1); // Not incremented yet
 
         // Black moves
         let m2: Move = "e8-e7".parse().unwrap();
-        fen.try_move(m2).unwrap();
+        fen.apply_move(m2).unwrap();
         assert_eq!(fen.fullmove_cnt(), 2); // Incremented after black
     }
 
@@ -1958,7 +2147,7 @@ mod tests {
         fen.set_square(Square(4), BLACK_KING); // e8
 
         let m: Move = "e2-e4".parse().unwrap();
-        fen.try_move(m).unwrap();
+        fen.apply_move(m).unwrap();
 
         // En passant target should be e3 (sq 44)
         let ep_target = fen.en_passant_target(BLACK_MOVE);
@@ -1975,12 +2164,12 @@ mod tests {
 
         // White plays e2-e4 (sets ep target to e3)
         let m1: Move = "e2-e4".parse().unwrap();
-        fen.try_move(m1).unwrap();
+        fen.apply_move(m1).unwrap();
         assert_eq!(fen.en_passant_target(BLACK_MOVE), Some(44)); // e3
 
         // Black plays d7-d6 (should clear ep target)
         let m2: Move = "d7-d6".parse().unwrap();
-        fen.try_move(m2).unwrap();
+        fen.apply_move(m2).unwrap();
         assert_eq!(fen.en_passant_target(WHITE_MOVE), None);
     }
 
@@ -1994,7 +2183,7 @@ mod tests {
         fen.set_square(Square(4), BLACK_ROOK); // e8 — pinning
         fen.set_square(Square(0), BLACK_KING); // a8
 
-        let moves = fen.all_valid_moves_from_square(Square(52));
+        let moves = fen.legal_moves_from(Square(52));
         // Rook can only move along the e-file (e3-e7), not horizontally
         for m in &moves {
             assert_eq!(sq_file(m.dst()), 4, "pinned rook can only stay on e-file");
@@ -2010,7 +2199,7 @@ mod tests {
         fen.set_square(Square(48), BLACK_ROOK); // a2
         fen.set_square(Square(0), BLACK_KING); // a8
 
-        let moves = fen.all_valid_moves_from_square(Square(60));
+        let moves = fen.legal_moves_from(Square(60));
         // King cannot move to d2, e2, f2 — attacked by black rook on a2
         for m in &moves {
             assert_ne!(m.dst(), 51, "king cannot move to d2");
@@ -2034,10 +2223,10 @@ mod tests {
         // Black plays d7-d5 (double push)
         fen.set_active_player(BLACK_MOVE);
         let m1: Move = "d7-d5".parse().unwrap();
-        fen.try_move(m1).unwrap();
+        fen.apply_move(m1).unwrap();
 
         // White's e5 pawn is pinned — en passant capture would expose king
-        let moves = fen.all_valid_moves_from_square(Square(28));
+        let moves = fen.legal_moves_from(Square(28));
         for m in &moves {
             assert_ne!(m.dst(), 19, "pinned pawn cannot capture en passant");
         }
@@ -2052,7 +2241,7 @@ mod tests {
 
     #[test]
     fn parse_startpos() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         assert_eq!(fen.square_bits(Square(60)), WHITE_KING); // e1
@@ -2073,7 +2262,7 @@ mod tests {
 
     #[test]
     fn parse_midgame_fen() {
-        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+        let fen: Position = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
             .parse()
             .unwrap();
         assert_eq!(fen.square_bits(Square(60)), WHITE_KING); // e1
@@ -2085,7 +2274,7 @@ mod tests {
 
     #[test]
     fn fen_roundtrip_startpos() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         assert_eq!(
@@ -2096,7 +2285,7 @@ mod tests {
 
     #[test]
     fn fen_roundtrip_midgame() {
-        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+        let fen: Position = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
             .parse()
             .unwrap();
         assert_eq!(
@@ -2107,7 +2296,7 @@ mod tests {
 
     #[test]
     fn fen_roundtrip_no_castling() {
-        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w - - 0 1"
+        let fen: Position = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w - - 0 1"
             .parse()
             .unwrap();
         assert_eq!(
@@ -2118,7 +2307,7 @@ mod tests {
 
     #[test]
     fn fen_roundtrip_black_to_move() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"
             .parse()
             .unwrap();
         assert_eq!(
@@ -2129,7 +2318,7 @@ mod tests {
 
     #[test]
     fn fen_roundtrip_en_passant() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
             .parse()
             .unwrap();
         assert_eq!(
@@ -2143,55 +2332,55 @@ mod tests {
         // Missing fields
         assert!(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0"
-                .parse::<Fen>()
+                .parse::<Position>()
                 .is_err()
         );
         // Invalid piece letter
         assert!(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNX w KQkq - 0 1"
-                .parse::<Fen>()
+                .parse::<Position>()
                 .is_err()
         );
         // Invalid active color
         assert!(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR x KQkq - 0 1"
-                .parse::<Fen>()
+                .parse::<Position>()
                 .is_err()
         );
         // Invalid castling
         assert!(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkqX - 0 1"
-                .parse::<Fen>()
+                .parse::<Position>()
                 .is_err()
         );
         // Invalid en passant
         assert!(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq e9 0 1"
-                .parse::<Fen>()
+                .parse::<Position>()
                 .is_err()
         );
         // Invalid halfmove
         assert!(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - x 1"
-                .parse::<Fen>()
+                .parse::<Position>()
                 .is_err()
         );
         // Invalid fullmove
         assert!(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 0"
-                .parse::<Fen>()
+                .parse::<Position>()
                 .is_err()
         );
         // Two white kings
         assert!(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNK w KQkq - 0 1"
-                .parse::<Fen>()
+                .parse::<Position>()
                 .is_err()
         );
         // Pawn on rank 8
         assert!(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNP w KQkq - 0 1"
-                .parse::<Fen>()
+                .parse::<Position>()
                 .is_err()
         );
     }
@@ -2200,7 +2389,7 @@ mod tests {
 
     #[test]
     fn san_parse_quiet_move() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("e4").unwrap();
@@ -2210,7 +2399,7 @@ mod tests {
 
     #[test]
     fn san_parse_capture() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("Nf3").unwrap();
@@ -2220,7 +2409,7 @@ mod tests {
 
     #[test]
     fn san_parse_pawn_capture() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("dxe4").unwrap();
@@ -2230,7 +2419,7 @@ mod tests {
 
     #[test]
     fn san_parse_promotion() {
-        let fen: Fen = "8/P7/8/8/8/8/8/k6K w - - 0 1".parse().unwrap();
+        let fen: Position = "8/P7/8/8/8/8/8/k6K w - - 0 1".parse().unwrap();
         let m = fen.parse_san("a8=Q+").unwrap();
         assert_eq!(m.src(), 8); // a7
         assert_eq!(m.dst(), 0); // a8
@@ -2239,7 +2428,7 @@ mod tests {
 
     #[test]
     fn san_parse_castling_kingside() {
-        let fen: Fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1"
+        let fen: Position = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("O-O").unwrap();
@@ -2249,7 +2438,7 @@ mod tests {
 
     #[test]
     fn san_parse_castling_queenside() {
-        let fen: Fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1"
+        let fen: Position = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("O-O-O").unwrap();
@@ -2260,7 +2449,7 @@ mod tests {
     #[test]
     fn san_parse_check() {
         // Position where Qh5+ is check (e2/f2 pawns moved out of the way, f7 pawn removed)
-        let fen: Fen = "rnbqkbnr/pppp2pp/8/8/8/8/PPPP2PP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppp2pp/8/8/8/8/PPPP2PP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("Qh5+").unwrap();
@@ -2271,7 +2460,7 @@ mod tests {
     #[test]
     fn san_parse_knight_disambiguation() {
         // Two knights can move to f3: g1 and e5
-        let fen: Fen = "8/8/8/4N3/8/8/5N2/k6K w - - 0 1".parse().unwrap();
+        let fen: Position = "8/8/8/4N3/8/8/5N2/k6K w - - 0 1".parse().unwrap();
         let m = fen.parse_san("Nef3").unwrap();
         assert_eq!(m.src(), 28); // e5
         assert_eq!(m.dst(), 45); // f3
@@ -2280,7 +2469,7 @@ mod tests {
     #[test]
     fn san_parse_rook_disambiguation_by_rank() {
         // Two rooks can move to d3: d1 and d5
-        let fen: Fen = "7k/8/8/3R4/8/8/8/3R3K w - - 0 1".parse().unwrap();
+        let fen: Position = "7k/8/8/3R4/8/8/8/3R3K w - - 0 1".parse().unwrap();
         let m = fen.parse_san("R1d3").unwrap();
         assert_eq!(m.src(), 59); // d1
         assert_eq!(m.dst(), 43); // d3
@@ -2288,7 +2477,7 @@ mod tests {
 
     #[test]
     fn san_format_quiet_move() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("e4").unwrap();
@@ -2297,7 +2486,7 @@ mod tests {
 
     #[test]
     fn san_format_capture() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("Nf3").unwrap();
@@ -2307,14 +2496,14 @@ mod tests {
     #[test]
     fn san_format_promotion() {
         // Queen on a8 attacks black king on a1 (same file) — this IS check
-        let fen: Fen = "8/P7/8/8/8/8/8/k6K w - - 0 1".parse().unwrap();
+        let fen: Position = "8/P7/8/8/8/8/8/k6K w - - 0 1".parse().unwrap();
         let m = fen.parse_san("a8=Q+").unwrap();
         assert_eq!(fen.to_san(&m), "a8=Q+");
     }
 
     #[test]
     fn san_format_castling() {
-        let fen: Fen = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1"
+        let fen: Position = "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("O-O").unwrap();
@@ -2323,7 +2512,7 @@ mod tests {
 
     #[test]
     fn san_format_check() {
-        let fen: Fen = "rnbqkbnr/pppp2pp/8/8/8/8/PPPP2PP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppp2pp/8/8/8/8/PPPP2PP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("Qh5+").unwrap();
@@ -2333,14 +2522,14 @@ mod tests {
     #[test]
     fn san_format_knight_disambiguation() {
         // Knights on e5 and g1 can both move to f3
-        let fen: Fen = "7k/8/8/4N3/8/8/8/6NK w - - 0 1".parse().unwrap();
+        let fen: Position = "7k/8/8/4N3/8/8/8/6NK w - - 0 1".parse().unwrap();
         let m = fen.parse_san("Nef3").unwrap();
         assert_eq!(fen.to_san(&m), "Nef3");
     }
 
     #[test]
     fn san_roundtrip_startpos() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("e4").unwrap();
@@ -2349,7 +2538,7 @@ mod tests {
 
     #[test]
     fn san_roundtrip_midgame() {
-        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+        let fen: Position = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("O-O").unwrap();
@@ -2358,11 +2547,12 @@ mod tests {
 
     #[test]
     fn public_api_apply_move() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("e4").unwrap();
-        let new_fen = apply_move(&fen, m).unwrap();
+        let mut new_fen = fen;
+        new_fen.apply_move(m).unwrap();
         assert_eq!(
             new_fen.to_fen(),
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
@@ -2371,38 +2561,190 @@ mod tests {
 
     #[test]
     fn public_api_apply_move_invalid() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let mut fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         // e2e5 is not a legal move
         let m = Move::new(0, 12, 28);
-        assert!(apply_move(&fen, m).is_err());
+        assert!(fen.apply_move(m).is_err());
     }
 
     #[test]
-    fn public_api_moves_from_square() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-            .parse()
-            .unwrap();
+    fn public_api_legal_moves_from() {
+        let fen = Position::new();
         // Knight on b1 (sq 57) has 2 moves: a3 and c3
-        let moves = moves_from_square(&fen, Square(57));
-        assert_eq!(moves.len(), 2);
+        assert_eq!(fen.legal_moves_from(Square(57)).len(), 2);
+        // Empty square
+        assert!(fen.legal_moves_from(Square(28)).is_empty());
     }
 
     #[test]
-    fn public_api_moves_from_square_empty() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+    fn public_api_piece_at_and_side_to_move() {
+        let fen = Position::new();
+        assert_eq!(
+            fen.piece_at(Square(60)),
+            Some(Piece {
+                color: Color::White,
+                kind: PieceKind::King
+            })
+        );
+        assert_eq!(fen.piece_at(Square(3)).map(Piece::symbol), Some('q'));
+        assert_eq!(fen.piece_at(Square(28)), None);
+        assert_eq!(fen.side_to_move(), Color::White);
+
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
             .parse()
             .unwrap();
-        // Empty square
-        let moves = moves_from_square(&fen, Square(28));
-        assert!(moves.is_empty());
+        assert_eq!(fen.side_to_move(), Color::Black);
+    }
+
+    #[test]
+    fn status_ongoing() {
+        assert_eq!(Position::new().status(), Status::Ongoing);
+    }
+
+    #[test]
+    fn status_checkmate() {
+        // Fool's mate
+        let fen: Position = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
+            .parse()
+            .unwrap();
+        assert!(fen.is_check());
+        assert_eq!(
+            fen.status(),
+            Status::Checkmate {
+                winner: Color::Black
+            }
+        );
+    }
+
+    #[test]
+    fn status_stalemate() {
+        let fen: Position = "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1".parse().unwrap();
+        assert!(!fen.is_check());
+        assert_eq!(fen.status(), Status::Draw(DrawReason::Stalemate));
+    }
+
+    #[test]
+    fn status_insufficient_material() {
+        let draws = [
+            "4k3/8/8/8/8/8/8/4K3 w - - 0 1",   // K vs K
+            "4k3/8/8/8/8/8/8/2B1K3 w - - 0 1", // K+B vs K
+            "4k3/8/8/8/8/8/8/1N2K3 w - - 0 1", // K+N vs K
+            "2b1k3/8/8/8/8/8/8/5BK1 w - - 0 1", // bishops on the same square color
+        ];
+        for fen_str in draws {
+            let fen: Position = fen_str.parse().unwrap();
+            assert_eq!(
+                fen.status(),
+                Status::Draw(DrawReason::InsufficientMaterial),
+                "{fen_str}"
+            );
+        }
+
+        let not_draws = [
+            "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1",  // pawn
+            "1b2k3/8/8/8/8/8/8/5BK1 w - - 0 1", // bishops on opposite square colors
+            "4k3/8/8/8/8/8/8/1NB1K3 w - - 0 1", // K+B+N
+            "4k3/8/8/8/8/8/8/NN2K3 w - - 0 1",  // two knights
+        ];
+        for fen_str in not_draws {
+            let fen: Position = fen_str.parse().unwrap();
+            assert_eq!(fen.status(), Status::Ongoing, "{fen_str}");
+        }
+    }
+
+    #[test]
+    fn status_fifty_move_rule() {
+        let fen: Position = "4k3/8/8/8/8/8/4P3/4K3 w - - 99 80".parse().unwrap();
+        assert_eq!(fen.status(), Status::Ongoing);
+
+        let fen: Position = "4k3/8/8/8/8/8/4P3/4K3 w - - 100 80".parse().unwrap();
+        assert_eq!(fen.status(), Status::Draw(DrawReason::FiftyMoveRule));
+    }
+
+    #[test]
+    fn checkmate_takes_precedence_over_fifty_move_rule() {
+        let fen: Position = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 100 3"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            fen.status(),
+            Status::Checkmate {
+                winner: Color::Black
+            }
+        );
+    }
+
+    #[test]
+    fn halfmove_clock_saturates() {
+        let mut fen: Position = "4k3/8/8/8/8/8/8/R3K3 w - - 127 100".parse().unwrap();
+        fen.apply_move("a1-a2".parse().unwrap()).unwrap();
+        assert_eq!(fen.halfmove_cnt(), 127);
+        assert_eq!(fen.side_to_move(), Color::Black);
+        assert!("4k3/8/8/8/8/8/8/R3K3 w - - 128 100"
+            .parse::<Position>()
+            .is_err());
+    }
+
+    #[test]
+    fn fullmove_counter_past_255() {
+        let mut fen: Position = "4k3/8/8/8/8/8/8/R3K3 b - - 0 255".parse().unwrap();
+        fen.apply_move("e8-e7".parse().unwrap()).unwrap();
+        assert_eq!(fen.fullmove_cnt(), 256);
+        assert_eq!(fen.to_fen(), "8/4k3/8/8/8/8/8/R3K3 w - - 1 256");
+    }
+
+    #[test]
+    fn game_threefold_repetition() {
+        let mut game = Game::new();
+        let shuffle = ["Nf3", "Nf6", "Ng1", "Ng8"];
+        // Start position occurs for the second time after one shuffle, third after two.
+        for _ in 0..2 {
+            assert_eq!(game.status(), Status::Ongoing);
+            for san in shuffle {
+                let m = game.position().parse_san(san).unwrap();
+                game.play(m).unwrap();
+            }
+        }
+        assert_eq!(game.moves().len(), 8);
+        assert_eq!(
+            game.status(),
+            Status::Draw(DrawReason::ThreefoldRepetition)
+        );
+        let m = game.position().parse_san("Nf3").unwrap();
+        assert!(matches!(game.play(m), Err(Error::GameOver)));
+    }
+
+    #[test]
+    fn game_repetition_ignores_unusable_en_passant() {
+        // After 1.e4 the FEN has an e3 target, but no black pawn can capture, so the same
+        // placement after each later Ng1 (no e3 target) counts as a repeat of it.
+        let mut game = Game::new();
+        for san in ["e4", "Nf6", "Nf3", "Ng8", "Ng1", "Nf6", "Nf3", "Ng8", "Ng1"] {
+            let m = game.position().parse_san(san).unwrap();
+            game.play(m).unwrap();
+        }
+        assert_eq!(
+            game.status(),
+            Status::Draw(DrawReason::ThreefoldRepetition)
+        );
+    }
+
+    #[test]
+    fn game_rejects_illegal_move() {
+        let mut game = Game::new();
+        assert!(matches!(
+            game.play("e2-e5".parse().unwrap()),
+            Err(Error::InvalidMove)
+        ));
+        assert!(game.moves().is_empty());
     }
 
     #[test]
     fn after_e4_e5_nf3_black_has_29_moves() {
         // After 1.e4 e5 2.Nf3, the open e-file/diagonals give black 29 legal moves
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         let m1 = fen.parse_san("e4").unwrap();
@@ -2424,13 +2766,13 @@ mod tests {
             f
         };
 
-        assert_eq!(fen4.all_valid_moves().len(), 29);
+        assert_eq!(fen4.legal_moves().len(), 29);
     }
 
     #[test]
     fn san_parse_piece_capture() {
         // White bishop on e2 captures black knight on f3
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/5n2/PPPPBPPP/RNBQK1NR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/5n2/PPPPBPPP/RNBQK1NR w KQkq - 0 1"
             .parse()
             .unwrap();
         let m = fen.parse_san("Bxf3").unwrap();
@@ -2440,7 +2782,7 @@ mod tests {
     #[test]
     fn san_format_mate() {
         // Scholar's mate position: after 1.e4 e5 2.Bc4 Nc6 3.Qh5 Nf6
-        let fen: Fen = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
+        let fen: Position = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
             .parse()
             .unwrap();
         let m = fen.parse_san("Qxf7#").unwrap();
@@ -2457,8 +2799,8 @@ mod tests {
         ];
 
         for fen_str in &positions {
-            let fen: Fen = fen_str.parse().unwrap();
-            for m in fen.all_valid_moves() {
+            let fen: Position = fen_str.parse().unwrap();
+            for m in fen.legal_moves() {
                 let san = fen.to_san(&m);
                 let m2 = fen.parse_san(&san).unwrap_or_else(|e| {
                     panic!("Failed to parse SAN '{}' from {}: {:?}", san, fen_str, e)
@@ -2472,7 +2814,7 @@ mod tests {
 
     #[test]
     fn perft_startpos_depth1() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         assert_eq!(perft(&fen, 1), 20);
@@ -2480,7 +2822,7 @@ mod tests {
 
     #[test]
     fn perft_startpos_depth2() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         assert_eq!(perft(&fen, 2), 400);
@@ -2488,7 +2830,7 @@ mod tests {
 
     #[test]
     fn perft_startpos_depth3() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         assert_eq!(perft(&fen, 3), 8_902);
@@ -2496,7 +2838,7 @@ mod tests {
 
     #[test]
     fn perft_startpos_depth4() {
-        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        let fen: Position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
             .parse()
             .unwrap();
         assert_eq!(perft(&fen, 4), 197_281);
@@ -2504,7 +2846,7 @@ mod tests {
 
     #[test]
     fn perft_kiwipete_depth1() {
-        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+        let fen: Position = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
             .parse()
             .unwrap();
         assert_eq!(perft(&fen, 1), 48);
@@ -2512,7 +2854,7 @@ mod tests {
 
     #[test]
     fn perft_kiwipete_depth2() {
-        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+        let fen: Position = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
             .parse()
             .unwrap();
         assert_eq!(perft(&fen, 2), 2_039);
@@ -2520,7 +2862,7 @@ mod tests {
 
     #[test]
     fn perft_kiwipete_depth3() {
-        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+        let fen: Position = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
             .parse()
             .unwrap();
         assert_eq!(perft(&fen, 3), 97_862);
@@ -2528,7 +2870,7 @@ mod tests {
 
     #[test]
     fn perft_position3_depth3() {
-        let fen: Fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"
+        let fen: Position = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"
             .parse()
             .unwrap();
         assert_eq!(perft(&fen, 3), 2_812);
@@ -2536,7 +2878,7 @@ mod tests {
 
     #[test]
     fn perft_position3_depth4() {
-        let fen: Fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"
+        let fen: Position = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"
             .parse()
             .unwrap();
         assert_eq!(perft(&fen, 4), 43_238);
@@ -2544,7 +2886,7 @@ mod tests {
 
     #[test]
     fn perft_position4_depth3() {
-        let fen: Fen = "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1"
+        let fen: Position = "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1"
             .parse()
             .unwrap();
         assert_eq!(perft(&fen, 3), 9_467);

@@ -1,4 +1,4 @@
-use game::{apply_move, moves_from_square, Fen, Move, Square};
+use game::{Color, Error, Game, Move, Position, Status};
 use std::str::FromStr;
 
 // ── Seeded RNG (xorshift64*) ────────────────────────────────────────────────
@@ -130,33 +130,40 @@ fn random_move(rng: &mut Rng) -> Move {
     Move::from_str(&s).expect("valid move string")
 }
 
-fn all_legal_moves(fen: &Fen) -> Vec<Move> {
-    let mut moves = Vec::new();
-    for sq in 0..64u8 {
-        moves.extend(moves_from_square(fen, Square(sq)));
-    }
-    moves
+fn all_legal_moves(position: &Position) -> Vec<Move> {
+    position.legal_moves()
 }
 
-fn starting_positions() -> Vec<(&'static str, Fen)> {
+fn apply_move(position: &Position, m: Move) -> Result<Position, Error> {
+    let mut next = *position;
+    next.apply_move(m)?;
+    Ok(next)
+}
+
+fn starting_positions() -> Vec<(&'static str, Position)> {
     vec![
         (
             "startpos",
-            Fen::from_str("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap(),
+            Position::from_str("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+                .unwrap(),
         ),
         (
             "kiwipete",
-            Fen::from_str("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")
-                .unwrap(),
+            Position::from_str(
+                "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            )
+            .unwrap(),
         ),
         (
             "position3",
-            Fen::from_str("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1").unwrap(),
+            Position::from_str("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1").unwrap(),
         ),
         (
             "position4",
-            Fen::from_str("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1")
-                .unwrap(),
+            Position::from_str(
+                "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+            )
+            .unwrap(),
         ),
     ]
 }
@@ -179,23 +186,32 @@ fn pgn_roundtrip_famous_games() {
             .unwrap_or_else(|e| panic!("Failed to read {}: {}", file, e));
         let moves = parse_pgn_moves(&pgn);
 
-        let mut fen = Fen::from_str("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
-            .expect("startpos FEN");
+        let mut game = Game::new();
 
         for san in &moves {
-            let m = fen
+            let m = game
+                .position()
                 .parse_san(san)
                 .unwrap_or_else(|e| panic!("Failed to parse '{}' in {}: {:?}", san, file, e));
 
-            let formatted = fen.to_san(&m);
+            let formatted = game.position().to_san(&m);
             assert_eq!(
                 &formatted, san,
                 "Round-trip failed for '{}' in {}",
                 san, file
             );
 
-            fen = apply_move(&fen, m)
+            game.play(m)
                 .unwrap_or_else(|e| panic!("Failed to apply '{}' in {}: {:?}", san, file, e));
+        }
+
+        if file.ends_with("scholars_mate.pgn") {
+            assert_eq!(
+                game.status(),
+                Status::Checkmate {
+                    winner: Color::White
+                }
+            );
         }
     }
 }
@@ -241,7 +257,7 @@ fn invalid_moves_rejected() {
 
 #[test]
 fn invalid_san_strings_rejected() {
-    let fen = Fen::from_str("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
+    let fen = Position::from_str("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
 
     let invalid = [
         "Xe4", "Ze4", "Ke9", "Qe9", "Ne9", "Be9", "Re9", "xe4", "e9", "e0", "e", "Q", "N",
@@ -276,8 +292,9 @@ fn fuzz_roundtrip_with_invalid_moves() {
             .unwrap_or_else(|e| panic!("Failed to read {}: {}", file, e));
         let moves = parse_pgn_moves(&pgn);
 
-        let mut fen = Fen::from_str("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
-            .expect("startpos FEN");
+        let mut fen =
+            Position::from_str("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+                .expect("startpos FEN");
 
         for san in &moves {
             let m = fen
@@ -314,7 +331,7 @@ fn fuzz_roundtrip_with_invalid_moves() {
 #[test]
 fn en_passant_roundtrip() {
     let fen =
-        Fen::from_str("rnbqkbnr/pppp1ppp/8/4P3/8/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
+        Position::from_str("rnbqkbnr/pppp1ppp/8/4P3/8/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
 
     let m = fen.parse_san("d5").unwrap();
     let fen2 = apply_move(&fen, m).unwrap();
@@ -326,7 +343,7 @@ fn en_passant_roundtrip() {
 
 #[test]
 fn promotion_roundtrip() {
-    let fen = Fen::from_str("8/P7/8/8/8/8/8/k6K w - - 0 1").unwrap();
+    let fen = Position::from_str("8/P7/8/8/8/8/8/k6K w - - 0 1").unwrap();
 
     let m = fen.parse_san("a8=Q+").unwrap();
     let san = fen.to_san(&m);
@@ -336,7 +353,7 @@ fn promotion_roundtrip() {
 #[test]
 fn mate_suffix() {
     // Scholar's mate: after 1.e4 e5 2.Bc4 Nc6 3.Qh5 Nf6, Qxf7 is mate
-    let fen = Fen::from_str("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4")
+    let fen = Position::from_str("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4")
         .unwrap();
 
     let m = fen.parse_san("Qxf7#").unwrap();
@@ -347,7 +364,7 @@ fn mate_suffix() {
 #[test]
 fn piece_capture_roundtrip() {
     // White bishop on e2 captures black knight on f3
-    let fen = Fen::from_str("rnbqkbnr/pppppppp/8/8/8/5n2/PPPPBPPP/RNBQK1NR w KQkq - 0 1")
+    let fen = Position::from_str("rnbqkbnr/pppppppp/8/8/8/5n2/PPPPBPPP/RNBQK1NR w KQkq - 0 1")
         .unwrap();
 
     let m = fen.parse_san("Bxf3").unwrap();
