@@ -7,3 +7,4 @@ edition = "2024"
 crossterm = "0.29.0"
 ratatui = "0.30.2"
 anyhow = "1.0"
+game = { path = "../game" }

@@ -4,6 +4,9 @@ pub mod app;
 /// Terminal events handler.
 pub mod event;
 
+/// Keyboard-driven chess player.
+pub mod human;
+
 /// Widget renderer.
 pub mod ui;
 
@@ -41,6 +44,9 @@ fn main() -> Result<()> {
             Event::Mouse(_) => {}
             Event::Resize(_, _) => {}
         };
+        // Tick on every event so the human's move is applied right after the key press;
+        // the computer then replies on the next event.
+        app.tick();
     }
 
     // Exit the user interface.

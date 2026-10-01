@@ -1,6 +1,8 @@
 mod attacks;
+mod player;
 
 use attacks::*;
+pub use player::{Match, Player, RandomPlayer};
 
 use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
