@@ -233,17 +233,57 @@ impl Fen {
 
     pub fn parse_san(&self, san: &str) -> Result<Move, Error> {
         let san = san.trim();
+        if san.is_empty() {
+            return Err(Error::InvalidMove);
+        }
 
-        // Strip check/mate suffix
-        let san = san.trim_end_matches('+').trim_end_matches('#');
+        // Separate optional check/mate suffix (at most one)
+        let (core, suffix) = if let Some(rest) = san.strip_suffix('#') {
+            (rest, Some('#'))
+        } else if let Some(rest) = san.strip_suffix('+') {
+            (rest, Some('+'))
+        } else {
+            (san, None)
+        };
 
+        let m = self.parse_san_core(core)?;
+        self.validate_san_suffix(m, suffix)?;
+        Ok(m)
+    }
+
+    /// A missing suffix is accepted; a present one must match the resulting position.
+    fn validate_san_suffix(&self, m: Move, suffix: Option<char>) -> Result<(), Error> {
+        if suffix.is_none() {
+            return Ok(());
+        }
+        let expected = {
+            let mut test_fen = *self;
+            test_fen.apply_move_unchecked(m);
+            let opponent = self.active_player_bit() ^ 1;
+            let king_sq = test_fen.king_square(opponent);
+            if test_fen.is_attacked_by(king_sq, self.active_player_bit()) {
+                let has_legal = (0..64).any(|sq| {
+                    !test_fen.all_valid_moves_from_square(Square(sq)).is_empty()
+                });
+                if has_legal {
+                    Some('+')
+                } else {
+                    Some('#')
+                }
+            } else {
+                None
+            }
+        };
+        if suffix == expected {
+            Ok(())
+        } else {
+            Err(Error::InvalidMove)
+        }
+    }
+
+    fn parse_san_core(&self, san: &str) -> Result<Move, Error> {
         // Castling
         if san == "O-O" || san == "0-0" {
-            let king_sq = if self.active_player_bit() == WHITE_MOVE {
-                60
-            } else {
-                4
-            };
             let king_dst = if self.active_player_bit() == WHITE_MOVE {
                 62
             } else {
@@ -252,11 +292,6 @@ impl Fen {
             return self.find_move(KING_TYPE, king_dst, None, None, 0, false);
         }
         if san == "O-O-O" || san == "0-0-0" {
-            let king_sq = if self.active_player_bit() == WHITE_MOVE {
-                60
-            } else {
-                4
-            };
             let king_dst = if self.active_player_bit() == WHITE_MOVE {
                 58
             } else {
@@ -289,6 +324,9 @@ impl Fen {
             Some(b'N') => {
                 idx += 1;
                 KNIGHT_TYPE
+            }
+            Some(&ch) if ch.is_ascii_uppercase() => {
+                return Err(Error::InvalidMove);
             }
             _ => PAWN_TYPE,
         };
@@ -325,15 +363,20 @@ impl Fen {
             if bytes.len().saturating_sub(idx) < 2 {
                 return Err(Error::InvalidMove);
             }
+            if !(b'a'..=b'h').contains(&bytes[idx]) || !(b'1'..=b'8').contains(&bytes[idx + 1]) {
+                return Err(Error::InvalidMove);
+            }
             let dst_file = (bytes[idx] - b'a') as i8;
             let dst_rank = (bytes[idx + 1] - b'1') as i8;
             dst = rank_file_to_sq(7 - dst_rank, dst_file);
             idx += 2;
+
+            // Pawn captures must include the origin file letter (e.g. exd5, not xd5)
+            if is_capture && disambig_file.is_none() {
+                return Err(Error::InvalidMove);
+            }
         } else {
             // For pieces: [KQRBN][file]?[rank]?x?[file][rank](=[piece])?
-            // The destination is always the last 2 characters before any promotion
-            // Find the destination by looking for the last file+rank pattern
-
             // First, check for capture
             if let Some(&ch) = bytes.get(idx) {
                 if ch == b'x' {
@@ -341,10 +384,6 @@ impl Fen {
                     idx += 1;
                 }
             }
-
-            // For pieces, we need to find the destination square
-            // The destination is the last file+rank before any promotion
-            // Strategy: scan from the end to find the destination
 
             // Find the position of the destination square
             // The destination is [file][rank] and is followed by optional [=piece]
@@ -378,6 +417,10 @@ impl Fen {
                 } else if (b'1'..=b'8').contains(&ch) {
                     // Convert SAN rank (1-8) to code rank (0=rank8, 7=rank1)
                     disambig_rank = Some(7 - (ch - b'1') as i8);
+                } else if ch == b'x' {
+                    is_capture = true;
+                } else {
+                    return Err(Error::InvalidMove);
                 }
                 di += 1;
             }
@@ -403,6 +446,12 @@ impl Fen {
                 b'N' => KNIGHT_TYPE,
                 _ => return Err(Error::InvalidMove),
             };
+            idx += 1;
+        }
+
+        // Reject trailing junk (e.g. "e4e5", "e4!!")
+        if idx != bytes.len() {
+            return Err(Error::InvalidMove);
         }
 
         // Find the matching move
@@ -476,6 +525,14 @@ impl Fen {
                 result.push_str("O-O-O");
             } else {
                 result.push('K');
+                let dst_bits = self.square_bits(Square(dst));
+                if dst_bits != 0 {
+                    result.push('x');
+                }
+                let dst_file = sq_file(dst);
+                let dst_rank = sq_rank(dst);
+                result.push((b'a' + dst_file as u8) as char);
+                result.push((b'1' + (7 - dst_rank) as u8) as char);
             }
         } else if pt == PAWN_TYPE {
             // Pawn move
@@ -902,22 +959,27 @@ impl Fen {
                 moves.extend(self.castling_moves(active_player));
             }
             PAWN_TYPE => {
-                let (pushes, captures, _) = if active_player == 0 {
+                let (pushes, captures) = if active_player == 0 {
                     (
                         PAWN_PUSHES_WHITE[src as usize],
                         PAWN_ATTACKS_WHITE[src as usize],
-                        6u8, // white pawns on rank 6 can double-push
                     )
                 } else {
                     (
                         flip_rank_bb(PAWN_PUSHES_WHITE[flip_rank_sq(src) as usize]),
                         flip_rank_bb(PAWN_ATTACKS_WHITE[flip_rank_sq(src) as usize]),
-                        1u8, // black pawns on rank 1 can double-push
                     )
                 };
 
                 // Forward pushes (only if destination is empty)
                 for dst in bitboard_iter(pushes & !occ) {
+                    // Double push requires the intermediate square empty
+                    if (src as i8 - dst as i8).abs() == 16 {
+                        let mid = ((src as u16 + dst as u16) / 2) as u8;
+                        if occ & (1u64 << mid) != 0 {
+                            continue;
+                        }
+                    }
                     if is_promotion_rank(dst, active_player) {
                         // Generate promotion moves
                         for promo in [QUEEN_TYPE, ROOK_TYPE, BISHOP_TYPE, KNIGHT_TYPE] {
@@ -928,15 +990,18 @@ impl Fen {
                     }
                 }
 
-                // En passant capture
+                // En passant capture — only if the pawn is on the correct rank
+                // White captures from rank 3 (ep target on rank 2)
+                // Black captures from rank 4 (ep target on rank 5)
                 if let Some(ep_sq) = self.en_passant_target(active_player) {
-                    if PAWN_ATTACKS_WHITE[if active_player == 0 {
-                        src
+                    let (correct_src_rank, correct_ep_rank) = if active_player == 0 {
+                        (3, 2)
                     } else {
-                        flip_rank_sq(src)
-                    } as usize]
-                        & (1u64 << ep_sq)
-                        != 0
+                        (4, 5)
+                    };
+                    if sq_rank(src) == correct_src_rank
+                        && sq_rank(ep_sq) == correct_ep_rank
+                        && captures & (1u64 << ep_sq) != 0
                     {
                         moves.push(Move::new(0, src, ep_sq));
                     }
@@ -1367,7 +1432,7 @@ impl FromStr for Fen {
 ///
 /// Technically, only 1,968 possible moves, which could take up 11 bits.
 ///
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Move(u16);
 
 impl Move {
@@ -1461,6 +1526,24 @@ pub fn apply_move(fen: &Fen, m: Move) -> Result<Fen, Error> {
 /// Returns an empty vector if the square is empty or contains an opponent's piece.
 pub fn moves_from_square(fen: &Fen, sq: Square) -> Vec<Move> {
     fen.all_valid_moves_from_square(sq)
+}
+
+/// Count the number of leaf nodes in the move tree at the given depth.
+///
+/// Perft(0) = 1, Perft(1) = number of legal moves, Perft(2) = number of
+/// legal move pairs, etc.
+pub fn perft(fen: &Fen, depth: u32) -> u64 {
+    if depth == 0 {
+        return 1;
+    }
+
+    let mut count = 0u64;
+    for m in fen.all_valid_moves() {
+        let mut new_fen = *fen;
+        new_fen.apply_move_unchecked(m);
+        count += perft(&new_fen, depth - 1);
+    }
+    count
 }
 
 /// A square on the chess board, indexed 0-63 (a8=0, h1=63).
@@ -2148,7 +2231,7 @@ mod tests {
     #[test]
     fn san_parse_promotion() {
         let fen: Fen = "8/P7/8/8/8/8/8/k6K w - - 0 1".parse().unwrap();
-        let m = fen.parse_san("a8=Q").unwrap();
+        let m = fen.parse_san("a8=Q+").unwrap();
         assert_eq!(m.src(), 8); // a7
         assert_eq!(m.dst(), 0); // a8
         assert_eq!(m.promo(), QUEEN_TYPE);
@@ -2225,7 +2308,7 @@ mod tests {
     fn san_format_promotion() {
         // Queen on a8 attacks black king on a1 (same file) — this IS check
         let fen: Fen = "8/P7/8/8/8/8/8/k6K w - - 0 1".parse().unwrap();
-        let m = fen.parse_san("a8=Q").unwrap();
+        let m = fen.parse_san("a8=Q+").unwrap();
         assert_eq!(fen.to_san(&m), "a8=Q+");
     }
 
@@ -2314,5 +2397,156 @@ mod tests {
         // Empty square
         let moves = moves_from_square(&fen, Square(28));
         assert!(moves.is_empty());
+    }
+
+    #[test]
+    fn after_e4_e5_nf3_black_has_29_moves() {
+        // After 1.e4 e5 2.Nf3, the open e-file/diagonals give black 29 legal moves
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m1 = fen.parse_san("e4").unwrap();
+        let fen2 = {
+            let mut f = fen;
+            f.apply_move_unchecked(m1);
+            f
+        };
+        let m2 = fen2.parse_san("e5").unwrap();
+        let fen3 = {
+            let mut f = fen2;
+            f.apply_move_unchecked(m2);
+            f
+        };
+        let m3 = fen3.parse_san("Nf3").unwrap();
+        let fen4 = {
+            let mut f = fen3;
+            f.apply_move_unchecked(m3);
+            f
+        };
+
+        assert_eq!(fen4.all_valid_moves().len(), 29);
+    }
+
+    #[test]
+    fn san_parse_piece_capture() {
+        // White bishop on e2 captures black knight on f3
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/5n2/PPPPBPPP/RNBQK1NR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("Bxf3").unwrap();
+        assert_eq!(fen.to_san(&m), "Bxf3");
+    }
+
+    #[test]
+    fn san_format_mate() {
+        // Scholar's mate position: after 1.e4 e5 2.Bc4 Nc6 3.Qh5 Nf6
+        let fen: Fen = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
+            .parse()
+            .unwrap();
+        let m = fen.parse_san("Qxf7#").unwrap();
+        assert_eq!(fen.to_san(&m), "Qxf7#");
+    }
+
+    #[test]
+    fn exhaustive_san_roundtrip() {
+        let positions = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+        ];
+
+        for fen_str in &positions {
+            let fen: Fen = fen_str.parse().unwrap();
+            for m in fen.all_valid_moves() {
+                let san = fen.to_san(&m);
+                let m2 = fen.parse_san(&san).unwrap_or_else(|e| {
+                    panic!("Failed to parse SAN '{}' from {}: {:?}", san, fen_str, e)
+                });
+                assert_eq!(m, m2, "Round-trip failed for '{}' from {}", san, fen_str);
+            }
+        }
+    }
+
+    // Perft tests
+
+    #[test]
+    fn perft_startpos_depth1() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(perft(&fen, 1), 20);
+    }
+
+    #[test]
+    fn perft_startpos_depth2() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(perft(&fen, 2), 400);
+    }
+
+    #[test]
+    fn perft_startpos_depth3() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(perft(&fen, 3), 8_902);
+    }
+
+    #[test]
+    fn perft_startpos_depth4() {
+        let fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(perft(&fen, 4), 197_281);
+    }
+
+    #[test]
+    fn perft_kiwipete_depth1() {
+        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(perft(&fen, 1), 48);
+    }
+
+    #[test]
+    fn perft_kiwipete_depth2() {
+        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(perft(&fen, 2), 2_039);
+    }
+
+    #[test]
+    fn perft_kiwipete_depth3() {
+        let fen: Fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(perft(&fen, 3), 97_862);
+    }
+
+    #[test]
+    fn perft_position3_depth3() {
+        let fen: Fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(perft(&fen, 3), 2_812);
+    }
+
+    #[test]
+    fn perft_position3_depth4() {
+        let fen: Fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(perft(&fen, 4), 43_238);
+    }
+
+    #[test]
+    fn perft_position4_depth3() {
+        let fen: Fen = "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1"
+            .parse()
+            .unwrap();
+        assert_eq!(perft(&fen, 3), 9_467);
     }
 }

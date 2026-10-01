@@ -208,7 +208,7 @@ pub fn bitboard_iter(bb: u64) -> BitboardIter {
 // Sliding piece attack generation at runtime
 
 pub fn sliding_attacks(sq: u8, ray_table: &[u64; 64], occupancy: u64) -> u64 {
-    let _rays = ray_table[sq as usize];
+    let rays = ray_table[sq as usize];
     let mut attacks = 0u64;
     let r = sq_rank(sq);
     let f = sq_file(sq);
@@ -243,5 +243,6 @@ pub fn sliding_attacks(sq: u8, ray_table: &[u64; 64], occupancy: u64) -> u64 {
         d += 1;
     }
 
-    attacks
+    // Restrict to the piece's rays (bishop=diagonals, rook=ranks/files, queen=both)
+    attacks & rays
 }
