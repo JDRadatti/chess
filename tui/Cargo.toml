@@ -8,3 +8,9 @@ crossterm = "0.29.0"
 ratatui = "0.30.2"
 anyhow = "1.0"
 game = { path = "../game" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+
+# Decoding and scaling piece images is far too slow unoptimized.
+[profile.dev.package."*"]
+opt-level = 3

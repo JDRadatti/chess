@@ -7,6 +7,9 @@ pub mod event;
 /// Keyboard-driven chess player.
 pub mod human;
 
+/// Piece artwork for terminals that can show images.
+pub mod pieces;
+
 /// Widget renderer.
 pub mod ui;
 
@@ -15,16 +18,27 @@ pub mod tui;
 
 /// Application updater.
 pub mod update;
-use app::App;
+
+#[cfg(test)]
+mod tests;
 use anyhow::Result;
+use app::App;
 use event::{Event, EventHandler};
+use pieces::PieceImages;
 use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui_image::picker::Picker;
 use tui::Tui;
-use update::update;
+use update::{update, update_mouse};
 
 fn main() -> Result<()> {
     // Create an application.
     let mut app = App::new();
+
+    // Ask the terminal about image support before anything else reads its replies.
+    let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+    if let Ok(images) = PieceImages::new(picker) {
+        app.set_piece_images(images);
+    }
 
     // Initialize the terminal user interface.
     let backend = CrosstermBackend::new(std::io::stderr());
@@ -41,7 +55,7 @@ fn main() -> Result<()> {
         match tui.events.next()? {
             Event::Tick => {}
             Event::Key(key_event) => update(&mut app, key_event),
-            Event::Mouse(_) => {}
+            Event::Mouse(mouse_event) => update_mouse(&mut app, mouse_event),
             Event::Resize(_, _) => {}
         };
         // Tick on every event so the human's move is applied right after the key press;

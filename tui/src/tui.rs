@@ -48,7 +48,6 @@ impl Tui {
         Ok(())
     }
 
-
     /// [`Draw`] the terminal interface by [`rendering`] the widgets.
     ///
     /// [`Draw`]: tui::Terminal::draw

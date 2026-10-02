@@ -1608,6 +1608,11 @@ impl Move {
     pub const fn promo(self) -> u8 {
         (self.0 & 0b00001111) as u8
     }
+
+    /// The piece a pawn promotes to, if this is a promotion.
+    pub fn promotion(self) -> Option<PieceKind> {
+        Piece::from_bits(self.promo()).map(|p| p.kind)
+    }
 }
 
 fn parse_square(file_ch: u8, rank_ch: u8) -> Result<u8, &'static str> {
@@ -2004,6 +2009,19 @@ mod tests {
         assert_eq!(fen.square_bits(Square(4)), WHITE_QUEEN); // e8
         assert_eq!(fen.square_bits(Square(12)), EMPTY); // e7
         assert_eq!(fen.active_player_bit(), BLACK_MOVE);
+    }
+
+    #[test]
+    fn move_promotion_kind() {
+        assert_eq!(
+            "e7-e8-q".parse::<Move>().unwrap().promotion(),
+            Some(PieceKind::Queen)
+        );
+        assert_eq!(
+            "e7-e8-n".parse::<Move>().unwrap().promotion(),
+            Some(PieceKind::Knight)
+        );
+        assert_eq!("e2-e4".parse::<Move>().unwrap().promotion(), None);
     }
 
     #[test]
