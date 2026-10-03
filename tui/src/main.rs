@@ -43,7 +43,8 @@ fn main() -> Result<()> {
     // Initialize the terminal user interface.
     let backend = CrosstermBackend::new(std::io::stderr());
     let terminal = Terminal::new(backend)?;
-    let events = EventHandler::new(250);
+    // The computer's move and search progress show up on the next tick, so tick often.
+    let events = EventHandler::new(100);
     let mut tui = Tui::new(terminal, events);
     tui.enter()?;
 
@@ -59,7 +60,7 @@ fn main() -> Result<()> {
             Event::Resize(_, _) => app.request_full_redraw(),
         };
         // Tick on every event so the human's move is applied right after the key press;
-        // the computer then replies on the next event.
+        // the computer thinks in the background and its reply lands on a later event.
         app.tick();
     }
 

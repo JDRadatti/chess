@@ -87,7 +87,11 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         Mode::Promotion { choice, .. } => {
             popup::promotion(frame, board_area, choice, human, unicode, &mut buttons);
         }
-        Mode::NewGame { choice } => popup::new_game(frame, board_area, choice, &mut buttons),
+        Mode::NewGame {
+            color,
+            level,
+            focus,
+        } => popup::new_game(frame, board_area, color, level, focus, &mut buttons),
         Mode::Playing if app.show_game_over_popup() => {
             popup::game_over(
                 frame,

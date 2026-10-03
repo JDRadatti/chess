@@ -1,13 +1,13 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{Color, Error, Game, Move, Position, Status};
+use crate::{Color, Error, Game, Move, Status};
 
 /// Something that chooses moves: a human at a UI, a search, a network peer, etc.
 ///
 /// Players must not block. [`Match::tick`] calls `request_move` once when it becomes this
 /// player's turn, then calls `poll_move` on every tick until a move is returned.
 pub trait Player {
-    fn request_move(&mut self, position: &Position);
+    fn request_move(&mut self, game: &Game);
     fn poll_move(&mut self) -> Option<Move>;
 }
 
@@ -47,14 +47,13 @@ impl Match {
             return Ok(None);
         }
 
-        let position = *self.game.position();
-        let player = match position.side_to_move() {
+        let player = match self.game.position().side_to_move() {
             Color::White => &mut self.white,
             Color::Black => &mut self.black,
         };
 
         if !self.requested {
-            player.request_move(&position);
+            player.request_move(&self.game);
             self.requested = true;
         }
 
@@ -76,11 +75,10 @@ pub struct RandomPlayer {
 impl RandomPlayer {
     /// Seeded from the system clock, so each game differs.
     pub fn new() -> Self {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
-        Self::with_seed(nanos)
+        Self {
+            rng: XorShift64::from_clock(),
+            chosen: None,
+        }
     }
 
     /// Same seed, same moves. Useful for reproducible tests.
@@ -99,8 +97,8 @@ impl Default for RandomPlayer {
 }
 
 impl Player for RandomPlayer {
-    fn request_move(&mut self, position: &Position) {
-        let moves = position.legal_moves();
+    fn request_move(&mut self, game: &Game) {
+        let moves = game.position().legal_moves();
         self.chosen = if moves.is_empty() {
             None
         } else {
@@ -113,23 +111,37 @@ impl Player for RandomPlayer {
     }
 }
 
-struct XorShift64(u64);
+pub(crate) struct XorShift64(u64);
 
 impl XorShift64 {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         // A zero state would only ever produce zeros.
         Self(seed | 1)
     }
 
-    fn next(&mut self) -> u64 {
+    pub(crate) fn from_clock() -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        Self::new(nanos)
+    }
+
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
         self.0
     }
 
-    fn below(&mut self, n: u64) -> u64 {
+    pub(crate) fn below(&mut self, n: u64) -> u64 {
         self.next() % n
+    }
+
+    /// True with probability `p`, from 0 to 1.
+    pub(crate) fn chance(&mut self, p: f64) -> bool {
+        let unit = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
+        unit < p
     }
 }
 
@@ -142,7 +154,7 @@ mod tests {
     struct Scripted(Vec<Move>);
 
     impl Player for Scripted {
-        fn request_move(&mut self, _position: &Position) {}
+        fn request_move(&mut self, _game: &Game) {}
         fn poll_move(&mut self) -> Option<Move> {
             if self.0.is_empty() {
                 None

@@ -1,9 +1,11 @@
-use game::PieceKind;
+use game::{PieceKind, engine::Level};
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use crate::app::{App, Button, COLOR_CHOICES, ColorChoice, Mode, PROMOTION_CHOICES};
+use crate::app::{
+    App, Button, ColorChoice, Mode, NEW_GAME_OPTIONS, NewGameOption, PROMOTION_CHOICES,
+};
 
 pub fn update(app: &mut App, key_event: KeyEvent) {
     let code = key_event.code;
@@ -16,15 +18,15 @@ pub fn update(app: &mut App, key_event: KeyEvent) {
 
     match app.mode {
         Mode::NewGame { .. } => match code {
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Left | KeyCode::Char('h') => {
-                app.move_choice(-1)
+            KeyCode::Up | KeyCode::Char('k') => app.move_choice(-1),
+            KeyCode::Down | KeyCode::Char('j') => app.move_choice(1),
+            KeyCode::Char('w') => app.choose(NewGameOption::Color(ColorChoice::White)),
+            KeyCode::Char('b') => app.choose(NewGameOption::Color(ColorChoice::Black)),
+            KeyCode::Char('r') => app.choose(NewGameOption::Color(ColorChoice::Random)),
+            KeyCode::Char(digit @ '1'..='4') => {
+                let index = digit as usize - '1' as usize;
+                app.choose(NewGameOption::Level(Level::ALL[index]));
             }
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Right | KeyCode::Char('l') => {
-                app.move_choice(1)
-            }
-            KeyCode::Char('w') => app.start_new_game(ColorChoice::White),
-            KeyCode::Char('b') => app.start_new_game(ColorChoice::Black),
-            KeyCode::Char('r') => app.start_new_game(ColorChoice::Random),
             KeyCode::Enter | KeyCode::Char(' ') => app.confirm_choice(),
             KeyCode::Esc => app.close_popup(),
             KeyCode::Char('q') => app.quit(),
@@ -77,7 +79,8 @@ pub fn update_mouse(app: &mut App, mouse_event: MouseEvent) {
     if let Some(button) = app.hitboxes.button_at(x, y) {
         match button {
             Button::Promotion(i) => app.promote(PROMOTION_CHOICES[i]),
-            Button::NewGame(i) => app.start_new_game(COLOR_CHOICES[i]),
+            Button::NewGameOption(i) => app.choose(NEW_GAME_OPTIONS[i]),
+            Button::StartGame => app.confirm_choice(),
             Button::OpenNewGame => app.open_new_game(),
             Button::Quit => app.quit(),
         }

@@ -8,7 +8,7 @@ use ratatui::{
 
 use super::LABEL;
 use crate::app::App;
-use game::{DrawReason, Status};
+use game::{DrawReason, Status, engine::EngineInfo};
 
 const CONTROLS: [&str; 7] = [
     "arrows/hjkl  move cursor",
@@ -20,7 +20,7 @@ const CONTROLS: [&str; 7] = [
     "q            quit",
 ];
 
-/// Status line, check warning, move list, and controls help.
+/// Status line, check warning, engine progress, move list, and controls help.
 pub struct GamePanel<'a> {
     app: &'a App,
 }
@@ -40,6 +40,9 @@ impl Widget for GamePanel<'_> {
                 "Check!",
                 Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
             ));
+        }
+        if let Some(engine) = &self.app.engine_info {
+            lines.extend(engine_lines(self.app, engine));
         }
         lines.push(Line::from(""));
 
@@ -96,6 +99,22 @@ pub fn status_text(app: &App) -> String {
             }
         ),
     }
+}
+
+/// The opponent's level and, once it has searched, how deep it looked and its evaluation
+/// (positive favors White).
+fn engine_lines(app: &App, engine: &EngineInfo) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Computer  ", Style::new().fg(LABEL)),
+        Span::raw(app.level.name()),
+    ])];
+    if let Some(info) = engine.latest() {
+        lines.push(Line::styled(
+            format!("depth {} · eval {}", info.depth, info.score),
+            Style::new().fg(LABEL),
+        ));
+    }
+    lines
 }
 
 /// Green for a win, red for a loss, yellow for a draw.

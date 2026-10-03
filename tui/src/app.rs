@@ -3,7 +3,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use game::{Color, Game, Match, Move, PieceKind, Player, RandomPlayer, Square, Status};
+use game::{
+    Color, Game, Match, Move, PieceKind, Player, Square, Status,
+    engine::{EngineInfo, EnginePlayer, Level},
+};
 use ratatui::layout::Rect;
 
 use crate::{human::HumanPlayer, pieces::PieceImages};
@@ -24,8 +27,25 @@ pub enum ColorChoice {
     Random,
 }
 
-pub const COLOR_CHOICES: [ColorChoice; 3] =
-    [ColorChoice::White, ColorChoice::Black, ColorChoice::Random];
+/// A row of the new-game picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewGameOption {
+    Color(ColorChoice),
+    Level(Level),
+}
+
+/// New-game picker rows, in display order.
+pub const NEW_GAME_OPTIONS: [NewGameOption; 7] = [
+    NewGameOption::Color(ColorChoice::White),
+    NewGameOption::Color(ColorChoice::Black),
+    NewGameOption::Color(ColorChoice::Random),
+    NewGameOption::Level(Level::Beginner),
+    NewGameOption::Level(Level::Easy),
+    NewGameOption::Level(Level::Medium),
+    NewGameOption::Level(Level::Hard),
+];
+
+pub const DEFAULT_LEVEL: Level = Level::Easy;
 
 /// What the keyboard and mouse are currently driving.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,9 +57,12 @@ pub enum Mode {
         dst: Square,
         choice: usize,
     },
-    /// Choosing a color for a new game.
+    /// Choosing a color and an opponent for a new game.
     NewGame {
-        choice: usize,
+        color: ColorChoice,
+        level: Level,
+        /// Index into [`NEW_GAME_OPTIONS`] of the row under the keyboard cursor.
+        focus: usize,
     },
 }
 
@@ -58,7 +81,9 @@ pub enum PieceStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
     Promotion(usize),
-    NewGame(usize),
+    /// A row of the new-game picker, by index into [`NEW_GAME_OPTIONS`].
+    NewGameOption(usize),
+    StartGame,
     OpenNewGame,
     Quit,
 }
@@ -115,6 +140,11 @@ pub struct App {
     pub should_quit: bool,
     pub game_match: Match,
     pub human_color: Color,
+    /// What was picked for this game, offered again by the next new-game picker.
+    pub color_choice: ColorChoice,
+    pub level: Level,
+    /// Progress of the computer's search, when the computer is the engine.
+    pub engine_info: Option<EngineInfo>,
     /// Moves chosen on the board are sent here and picked up by the [`HumanPlayer`].
     human_moves: Sender<Move>,
     /// Square under the keyboard cursor.
@@ -136,16 +166,22 @@ pub struct App {
 }
 
 impl App {
-    /// Starts as White with the new-game picker open.
+    /// Starts with the new-game picker open.
     pub fn new() -> Self {
-        Self {
-            mode: Mode::NewGame { choice: 0 },
-            ..Self::with_color(Color::White)
-        }
+        let mut app = Self::with_engine(Color::White, DEFAULT_LEVEL);
+        app.open_new_game();
+        app
     }
 
-    pub fn with_color(human_color: Color) -> Self {
-        Self::with_opponent(human_color, Game::new(), Box::new(RandomPlayer::new()))
+    /// A new game against the engine at `level`.
+    pub fn with_engine(human_color: Color, level: Level) -> Self {
+        let engine = EnginePlayer::with_level(level);
+        let engine_info = engine.info();
+        Self {
+            level,
+            engine_info: Some(engine_info),
+            ..Self::with_opponent(human_color, Game::new(), Box::new(engine))
+        }
     }
 
     /// Continues `game` with the human playing `human_color` against `computer`.
@@ -160,6 +196,12 @@ impl App {
             should_quit: false,
             game_match,
             human_color,
+            color_choice: match human_color {
+                Color::White => ColorChoice::White,
+                Color::Black => ColorChoice::Black,
+            },
+            level: DEFAULT_LEVEL,
+            engine_info: None,
             human_moves,
             cursor: match human_color {
                 Color::White => Square(52), // e2
@@ -181,9 +223,13 @@ impl App {
         if matches!(self.mode, Mode::NewGame { .. }) {
             return;
         }
-        let before = *self.game_match.game().position();
-        if let Ok(Some(m)) = self.game_match.tick() {
-            self.san_history.push(before.to_san(&m));
+        // Keep going after a move so the next player is asked for theirs right away.
+        loop {
+            let before = *self.game_match.game().position();
+            match self.game_match.tick() {
+                Ok(Some(m)) => self.san_history.push(before.to_san(&m)),
+                _ => break,
+            }
         }
     }
 
@@ -274,16 +320,39 @@ impl App {
             Mode::Promotion { choice, .. } => {
                 *choice = wrap(*choice, delta, PROMOTION_CHOICES.len());
             }
-            Mode::NewGame { choice } => *choice = wrap(*choice, delta, COLOR_CHOICES.len()),
+            Mode::NewGame { focus, .. } => {
+                let row = wrap(*focus, delta, NEW_GAME_OPTIONS.len());
+                self.choose(NEW_GAME_OPTIONS[row]);
+            }
             Mode::Playing => {}
         }
+    }
+
+    /// Picks a color or level in the new-game picker and moves the cursor to it.
+    pub fn choose(&mut self, option: NewGameOption) {
+        let Mode::NewGame {
+            color,
+            level,
+            focus,
+        } = &mut self.mode
+        else {
+            return;
+        };
+        match option {
+            NewGameOption::Color(choice) => *color = choice,
+            NewGameOption::Level(choice) => *level = choice,
+        }
+        *focus = NEW_GAME_OPTIONS
+            .iter()
+            .position(|o| *o == option)
+            .unwrap_or(0);
     }
 
     /// Confirms the highlighted option in the open picker.
     pub fn confirm_choice(&mut self) {
         match self.mode {
             Mode::Promotion { choice, .. } => self.promote(PROMOTION_CHOICES[choice]),
-            Mode::NewGame { choice } => self.start_new_game(COLOR_CHOICES[choice]),
+            Mode::NewGame { color, level, .. } => self.start_new_game(color, level),
             Mode::Playing => {}
         }
     }
@@ -307,7 +376,12 @@ impl App {
 
     pub fn open_new_game(&mut self) {
         self.selected = None;
-        self.mode = Mode::NewGame { choice: 0 };
+        self.mode = Mode::NewGame {
+            color: self.color_choice,
+            level: self.level,
+            focus: 0,
+        };
+        self.choose(NewGameOption::Color(self.color_choice));
     }
 
     /// Closes the open picker or popup without acting on it.
@@ -318,16 +392,17 @@ impl App {
         }
     }
 
-    pub fn start_new_game(&mut self, choice: ColorChoice) {
+    pub fn start_new_game(&mut self, choice: ColorChoice, level: Level) {
         let color = match choice {
             ColorChoice::White => Color::White,
             ColorChoice::Black => Color::Black,
             ColorChoice::Random => random_color(),
         };
         *self = Self {
+            color_choice: choice,
             piece_style: self.piece_style,
             piece_images: self.piece_images.take(),
-            ..Self::with_color(color)
+            ..Self::with_engine(color, level)
         };
     }
 

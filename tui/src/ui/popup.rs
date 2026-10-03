@@ -7,8 +7,8 @@ use ratatui::{
 };
 
 use super::{LABEL, board::glyph, panel::status_style};
-use crate::app::{App, Button, COLOR_CHOICES, ColorChoice, PROMOTION_CHOICES};
-use game::{Piece, PieceKind};
+use crate::app::{App, Button, ColorChoice, NEW_GAME_OPTIONS, NewGameOption, PROMOTION_CHOICES};
+use game::{Piece, PieceKind, engine::Level};
 
 /// A clickable line: its index among the popup's lines and what it does.
 type ButtonLine = (usize, Button);
@@ -50,20 +50,56 @@ pub fn promotion(
     );
 }
 
-pub fn new_game(frame: &mut Frame, anchor: Rect, choice: usize, buttons: &mut Vec<(Rect, Button)>) {
-    let mut lines = vec![Line::from(" Play as"), Line::from("")];
+/// Color and opponent pickers. `color` and `level` are marked as chosen; the row at `focus`
+/// is under the keyboard cursor.
+pub fn new_game(
+    frame: &mut Frame,
+    anchor: Rect,
+    color: ColorChoice,
+    level: Level,
+    focus: usize,
+    buttons: &mut Vec<(Rect, Button)>,
+) {
+    let mut lines = vec![];
     let mut clickable = vec![];
-    for (i, color) in COLOR_CHOICES.into_iter().enumerate() {
-        let (key, name) = match color {
-            ColorChoice::White => ('w', "White"),
-            ColorChoice::Black => ('b', "Black"),
-            ColorChoice::Random => ('r', "Random"),
+    for (i, option) in NEW_GAME_OPTIONS.into_iter().enumerate() {
+        let (key, name, chosen) = match option {
+            NewGameOption::Color(c) => {
+                let (key, name) = match c {
+                    ColorChoice::White => ('w', "White"),
+                    ColorChoice::Black => ('b', "Black"),
+                    ColorChoice::Random => ('r', "Random"),
+                };
+                (key, name.to_string(), c == color)
+            }
+            NewGameOption::Level(l) => {
+                let (key, hint) = match l {
+                    Level::Beginner => ('1', "makes mistakes"),
+                    Level::Easy => ('2', "sees 1 move ahead"),
+                    Level::Medium => ('3', "thinks 0.5 s"),
+                    Level::Hard => ('4', "thinks 2 s"),
+                };
+                (key, format!("{:<9}{hint}", l.name()), l == level)
+            }
         };
-        clickable.push((lines.len(), Button::NewGame(i)));
-        lines.push(option_line(format!(" {key}  {name}"), i == choice));
+        match (i, option) {
+            (0, _) => lines.extend([Line::from(" Play as"), Line::from("")]),
+            (_, NewGameOption::Level(Level::Beginner)) => {
+                lines.extend([Line::from(""), Line::from(" Opponent"), Line::from("")]);
+            }
+            _ => {}
+        }
+        let marker = if chosen { '●' } else { ' ' };
+        clickable.push((lines.len(), Button::NewGameOption(i)));
+        lines.push(option_line(format!(" {marker} {key}  {name}"), i == focus));
     }
     lines.push(Line::from(""));
-    lines.push(Line::styled(" esc  cancel", Style::new().fg(LABEL)));
+    clickable.push((lines.len(), Button::StartGame));
+    lines.push(Line::styled(
+        " enter  start",
+        Style::new().add_modifier(Modifier::BOLD),
+    ));
+    lines.push(Line::styled(" esc    cancel", Style::new().fg(LABEL)));
     draw(
         frame,
         anchor,

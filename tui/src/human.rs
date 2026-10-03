@@ -1,6 +1,6 @@
 use std::sync::mpsc::Receiver;
 
-use game::{Move, Player, Position};
+use game::{Game, Move, Player};
 
 /// A player whose moves come from the keyboard, via the sender kept in [`crate::app::App`].
 pub struct HumanPlayer {
@@ -14,7 +14,7 @@ impl HumanPlayer {
 }
 
 impl Player for HumanPlayer {
-    fn request_move(&mut self, _position: &Position) {}
+    fn request_move(&mut self, _game: &Game) {}
 
     fn poll_move(&mut self) -> Option<Move> {
         self.moves.try_recv().ok()

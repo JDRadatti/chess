@@ -1,4 +1,9 @@
-use game::{Color, Game, Move, Position, Square};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
+
+use game::{Color, Game, Move, Position, Square, engine::Level};
 use ratatui::{
     Terminal,
     backend::TestBackend,
@@ -23,7 +28,7 @@ const SELECTED_SQUARE: style::Color = style::Color::Rgb(230, 160, 70);
 struct Idle;
 
 impl game::Player for Idle {
-    fn request_move(&mut self, _position: &Position) {}
+    fn request_move(&mut self, _game: &Game) {}
 
     fn poll_move(&mut self) -> Option<Move> {
         None
@@ -86,6 +91,16 @@ fn key(app: &mut App, code: KeyCode) {
     update(app, KeyEvent::new(code, KeyModifiers::NONE));
 }
 
+/// Ticks until `plies` moves have been played, giving the engine thread time to answer.
+fn wait_for_moves(app: &mut App, plies: usize) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.san_history.len() < plies {
+        assert!(Instant::now() < deadline, "engine did not move");
+        app.tick();
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn click_button(app: &mut App, button: Button) {
     draw(app);
     let (rect, _) = app
@@ -111,20 +126,88 @@ const E6: Square = Square(20);
 const F6: Square = Square(21);
 
 #[test]
-fn startup_opens_color_picker() {
+fn startup_opens_new_game_picker() {
     let mut app = App::new();
     let screen = text(&draw(&mut app));
     assert!(screen.contains("New game"));
     assert!(screen.contains("Random"));
+    assert!(screen.contains("Hard"));
 
     app.tick();
     assert!(app.san_history.is_empty(), "match is paused while picking");
 
     key(&mut app, KeyCode::Char('b'));
+    key(&mut app, KeyCode::Char('1'));
+    assert!(matches!(
+        app.mode,
+        Mode::NewGame {
+            color: ColorChoice::Black,
+            level: Level::Beginner,
+            ..
+        }
+    ));
+    key(&mut app, KeyCode::Enter);
     assert_eq!(app.human_color, Color::Black);
+    assert_eq!(app.level, Level::Beginner);
     assert_eq!(app.mode, Mode::Playing);
-    app.tick();
+    wait_for_moves(&mut app, 1);
     assert_eq!(app.san_history.len(), 1, "computer opens as White");
+}
+
+#[test]
+fn new_game_picker_with_mouse_and_arrows() {
+    let mut app = App::new();
+    click_button(&mut app, Button::NewGameOption(6));
+    click_button(&mut app, Button::NewGameOption(1));
+    assert_eq!(
+        app.mode,
+        Mode::NewGame {
+            color: ColorChoice::Black,
+            level: Level::Hard,
+            focus: 1
+        }
+    );
+    // The cursor runs through both sections; landing on a row picks it.
+    for code in [KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Up] {
+        key(&mut app, code);
+    }
+    assert_eq!(
+        app.mode,
+        Mode::NewGame {
+            color: ColorChoice::Random,
+            level: Level::Beginner,
+            focus: 3
+        }
+    );
+
+    click_button(&mut app, Button::StartGame);
+    assert_eq!(app.mode, Mode::Playing);
+    assert_eq!(app.level, Level::Beginner);
+
+    app.open_new_game();
+    assert_eq!(
+        app.mode,
+        Mode::NewGame {
+            color: ColorChoice::Random,
+            level: Level::Beginner,
+            focus: 2
+        },
+        "the picker offers the last choices again"
+    );
+}
+
+#[test]
+fn engine_replies_and_reports_its_search() {
+    let mut app = App::with_engine(Color::White, Level::Easy);
+    let screen = text(&draw(&mut app));
+    assert!(screen.contains("Computer  Easy"), "{screen}");
+
+    click_square(&mut app, E2);
+    click_square(&mut app, E4);
+    app.tick();
+    wait_for_moves(&mut app, 2);
+    let screen = text(&draw(&mut app));
+    assert!(screen.contains("depth 2 · eval "), "{screen}");
 }
 
 #[test]
@@ -324,7 +407,7 @@ fn image_pieces() {
     let (x, y) = center_of(&app, E2);
     assert!(buf[(x, y)].symbol() != " ", "image covers the square");
 
-    app.start_new_game(ColorChoice::White);
+    app.start_new_game(ColorChoice::White, Level::Easy);
     assert!(app.image_pieces(), "style survives a new game");
 
     let mut picker = Picker::halfblocks();

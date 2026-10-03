@@ -1,4 +1,5 @@
 mod attacks;
+pub mod engine;
 mod player;
 
 use attacks::*;
@@ -1582,7 +1583,7 @@ impl FromStr for Position {
 ///
 /// Technically, only 1,968 possible moves, which could take up 11 bits.
 ///
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Move(u16);
 
 impl Move {
@@ -1718,6 +1719,11 @@ impl Game {
     /// Moves played since the starting position.
     pub fn moves(&self) -> &[Move] {
         &self.moves
+    }
+
+    /// Repetition keys of every position reached, oldest first; the last is the current one.
+    pub(crate) fn history(&self) -> &[[u8; 34]] {
+        &self.history
     }
 
     /// Plays `m` if the game is still ongoing and the move is legal.
