@@ -53,6 +53,9 @@ impl Tui {
     /// [`Draw`]: tui::Terminal::draw
     /// [`rendering`]: crate::ui:render
     pub fn draw(&mut self, app: &mut App) -> Result<()> {
+        if std::mem::take(&mut app.needs_full_redraw) {
+            self.terminal.clear()?;
+        }
         self.terminal.draw(|frame| ui::render(app, frame))?;
         Ok(())
     }

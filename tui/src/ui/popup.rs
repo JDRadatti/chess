@@ -30,7 +30,7 @@ pub fn promotion(
             PieceKind::Bishop => ('b', "Bishop"),
             _ => ('n', "Knight"),
         };
-        let symbol = glyph(Piece { color, kind }, unicode, false);
+        let symbol = glyph(Piece { color, kind }, unicode);
         clickable.push((lines.len(), Button::Promotion(i)));
         lines.push(option_line(
             format!(" {key}  {symbol}  {name}"),

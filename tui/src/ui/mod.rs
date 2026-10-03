@@ -11,7 +11,7 @@ use ratatui::{
 use ratatui_image::Image;
 
 use crate::app::{App, BoardGeometry, Hitboxes, Mode};
-use board::{BoardWidget, CapturesWidget, RANK_LABEL_WIDTH, Scale};
+use board::{BoardWidget, CapturesWidget, Scale};
 
 const INFO_WIDTH: u16 = 34;
 /// Enough rows for the status, a few moves, and the controls help.
@@ -49,7 +49,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     ));
 
     let geometry = BoardGeometry {
-        x: board_area.x + RANK_LABEL_WIDTH,
+        x: board_area.x,
         y: board_area.y,
         square_width: scale.square_width(),
         square_height: scale.square_height(),
@@ -69,12 +69,17 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     frame.render_widget(bottom, bottom_captures);
     if let Some(images) = app.piece_images.as_mut() {
         for sprite in sprites {
-            if let Some(image) = images.get(sprite.piece, sprite.background, sprite.area.as_size())
-            {
+            if let Some(image) = images.get(
+                sprite.graphic,
+                sprite.background,
+                sprite.square,
+                sprite.crop,
+            ) {
                 frame.render_widget(Image::new(image), sprite.area);
             }
         }
     }
+    board::draw_coordinates(frame.buffer_mut(), geometry);
     frame.render_widget(panel::GamePanel::new(app), info_area);
 
     let mut buttons = vec![];

@@ -56,7 +56,7 @@ fn main() -> Result<()> {
             Event::Tick => {}
             Event::Key(key_event) => update(&mut app, key_event),
             Event::Mouse(mouse_event) => update_mouse(&mut app, mouse_event),
-            Event::Resize(_, _) => {}
+            Event::Resize(_, _) => app.request_full_redraw(),
         };
         // Tick on every event so the human's move is applied right after the key press;
         // the computer then replies on the next event.

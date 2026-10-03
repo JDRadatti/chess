@@ -131,6 +131,8 @@ pub struct App {
     pub piece_images: Option<PieceImages>,
     /// Filled in by the renderer each frame.
     pub hitboxes: Hitboxes,
+    /// Clear the terminal and redraw everything on the next frame.
+    pub needs_full_redraw: bool,
 }
 
 impl App {
@@ -170,6 +172,7 @@ impl App {
             piece_style: PieceStyle::Symbols,
             piece_images: None,
             hitboxes: Hitboxes::default(),
+            needs_full_redraw: false,
         }
     }
 
@@ -345,6 +348,16 @@ impl App {
             PieceStyle::Letters if self.piece_images.is_some() => PieceStyle::Images,
             PieceStyle::Letters => PieceStyle::Symbols,
         };
+        self.request_full_redraw();
+    }
+
+    /// Repaints the whole screen on the next frame, so nothing a terminal left behind (such as
+    /// image fragments) survives. Images are sent again because clearing may delete them.
+    pub fn request_full_redraw(&mut self) {
+        self.needs_full_redraw = true;
+        if let Some(images) = self.piece_images.as_mut() {
+            images.clear_cache();
+        }
     }
 
     /// Whether text such as captured pieces should use chess symbols rather than letters.

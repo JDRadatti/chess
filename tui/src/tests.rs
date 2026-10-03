@@ -17,6 +17,7 @@ use crate::{
 };
 
 const CHECK_SQUARE: style::Color = style::Color::Rgb(210, 70, 60);
+const SELECTED_SQUARE: style::Color = style::Color::Rgb(230, 160, 70);
 
 /// Computer that never moves, so tests control the position.
 struct Idle;
@@ -103,6 +104,11 @@ const E1: Square = Square(60);
 const A7: Square = Square(8);
 const A8: Square = Square(0);
 const H1: Square = Square(63);
+const H8: Square = Square(7);
+const A1: Square = Square(56);
+const D6: Square = Square(19);
+const E6: Square = Square(20);
+const F6: Square = Square(21);
 
 #[test]
 fn startup_opens_color_picker() {
@@ -152,8 +158,53 @@ fn click_to_move() {
 
     let buf = draw(&mut app);
     let (x, y) = center_of(&app, E4);
-    assert_eq!(buf[(x, y)].symbol(), "♟");
-    assert_eq!(buf[(x, y)].fg, style::Color::White);
+    assert_eq!(buf[(x, y)].symbol(), "♙", "white pieces are outlined");
+    assert_eq!(buf[(x, y)].fg, style::Color::Black);
+}
+
+#[test]
+fn coordinates_sit_in_the_corner_squares() {
+    for (human, top_right, bottom_right) in [
+        (Color::White, ('8', H8), ('h', H1)),
+        (Color::Black, ('1', A1), ('a', A8)),
+    ] {
+        let mut app = App::with_opponent(human, Game::new(), Box::new(Idle));
+        let buf = draw(&mut app);
+        let g = app.hitboxes.board.unwrap();
+        let right = g.x + 8 * g.square_width - 1;
+        let bottom = g.y + 8 * g.square_height - 1;
+        assert_eq!(buf[(right, g.y)].symbol(), top_right.0.to_string());
+        assert_eq!(buf[(right, bottom)].symbol(), bottom_right.0.to_string());
+        assert_eq!(g.square_at_point(right, g.y), Some(top_right.1));
+        assert_eq!(g.square_at_point(right, bottom), Some(bottom_right.1));
+    }
+}
+
+#[test]
+fn move_targets_show_dots_and_shaded_captures() {
+    // White knight on e4 can capture on d6 or move to the empty f6.
+    let mut app = app_at("4k3/8/3p4/8/4N3/8/8/4K3 w - - 0 1", Color::White);
+    click_square(&mut app, E4);
+    let buf = draw(&mut app);
+
+    let (x, y) = center_of(&app, F6);
+    assert_eq!(buf[(x, y)].symbol(), "●");
+
+    let (x, y) = center_of(&app, D6);
+    let (ex, ey) = center_of(&app, E6);
+    assert_eq!(
+        buf[(x, y)].symbol(),
+        "♟",
+        "the capturable piece stays visible"
+    );
+    assert_ne!(buf[(x, y)].bg, buf[(ex, ey)].bg, "capture square is shaded");
+    assert!(
+        matches!(buf[(x, y)].bg, style::Color::Rgb(..)),
+        "capture square keeps a board color"
+    );
+
+    let (x, y) = center_of(&app, E4);
+    assert_eq!(buf[(x, y)].bg, SELECTED_SQUARE);
 }
 
 #[test]
@@ -237,7 +288,7 @@ fn captured_pieces_and_material() {
     );
     let buf = draw(&mut app);
     let g = app.hitboxes.board.unwrap();
-    let below_board = g.y + 8 * g.square_height + 1;
+    let below_board = g.y + 8 * g.square_height;
     let row: String = (0..buf.area.width)
         .map(|x| buf[(x, below_board)].symbol())
         .collect();
@@ -285,10 +336,58 @@ fn image_pieces() {
     app.set_piece_images(PieceImages::new(picker).unwrap());
     let buf = draw(&mut app);
     let g = app.hitboxes.board.unwrap();
-    let tray = &buf[(g.x, g.y + 8 * g.square_height + 1)];
+    let tray = &buf[(g.x, g.y + 8 * g.square_height)];
     assert!(
         !matches!(tray.symbol(), " " | "♛"),
         "captured queen is an image"
+    );
+}
+
+#[test]
+fn images_leave_coordinate_cells_alone() {
+    let mut picker = Picker::halfblocks();
+    picker.set_protocol_type(ProtocolType::Kitty);
+    let mut app = App::with_opponent(Color::White, Game::new(), Box::new(Idle));
+    app.set_piece_images(PieceImages::new(picker).unwrap());
+    let buf = draw(&mut app);
+    let g = app.hitboxes.board.unwrap();
+    let is_image = |x, y| buf[(x, y)].symbol().contains('\u{10EEEE}');
+
+    let right = g.x + 8 * g.square_width - 1;
+    for y in g.y..g.y + 8 * g.square_height {
+        assert!(!is_image(right, y), "right-hand column at row {y}");
+    }
+    let bottom = g.y + 8 * g.square_height - 1;
+    for col in 0..8 {
+        let right = g.x + col * g.square_width + g.square_width - 1;
+        assert!(!is_image(right, bottom), "letter of file {col}");
+        assert!(
+            is_image(right - 1, bottom),
+            "the rest of the square is still an image"
+        );
+    }
+    let (x, y) = center_of(&app, E2);
+    assert!(is_image(x, y), "other squares keep full images");
+
+    key(&mut app, KeyCode::Char('g'));
+    assert!(
+        app.needs_full_redraw,
+        "switching styles repaints everything"
+    );
+}
+
+#[test]
+fn move_dots_are_images_with_image_pieces() {
+    let mut picker = Picker::halfblocks();
+    picker.set_protocol_type(ProtocolType::Kitty);
+    let mut app = app_at("4k3/8/3p4/8/4N3/8/8/4K3 w - - 0 1", Color::White);
+    app.set_piece_images(PieceImages::new(picker).unwrap());
+    click_square(&mut app, E4);
+    let buf = draw(&mut app);
+    let (x, y) = center_of(&app, F6);
+    assert!(
+        !matches!(buf[(x, y)].symbol(), " " | "●"),
+        "dot is drawn as an image"
     );
 }
 

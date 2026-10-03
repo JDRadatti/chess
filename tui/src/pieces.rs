@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use game::{Color, Piece, PieceKind};
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage, imageops};
-use ratatui::layout::Size;
+use ratatui::layout::{Rect, Size};
 use ratatui_image::{Resize, picker::Picker, protocol::Protocol};
 
 /// Piece height as a fraction of the square's shorter side.
@@ -71,6 +71,19 @@ const ARTWORK: [(Color, PieceKind, &[u8]); 12] = [
     ),
 ];
 
+/// Dot radius as a fraction of the square's shorter side.
+const DOT_RADIUS: f32 = 0.16;
+
+/// What to paint on a square.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Graphic {
+    Piece(Piece),
+    /// A round marker for a square the selected piece can move to.
+    Dot {
+        color: [u8; 3],
+    },
+}
+
 /// Piece artwork, encoded for the terminal's graphics protocol on demand.
 pub struct PieceImages {
     picker: Picker,
@@ -80,7 +93,7 @@ pub struct PieceImages {
     /// Encoded images must outlive a single frame: the kitty protocol transmits each image once
     /// and afterwards only refers to it. Only a handful of sizes are ever used (one per board
     /// scale, plus the captured-piece trays), so nothing is evicted.
-    cache: HashMap<(Piece, [u8; 3], Size), Protocol>,
+    cache: HashMap<(Graphic, [u8; 3], Size, Rect), Protocol>,
 }
 
 impl PieceImages {
@@ -105,39 +118,104 @@ impl PieceImages {
         self.picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks
     }
 
-    /// `piece` drawn on a square of `square` cells filled with `background`.
-    pub fn get(&mut self, piece: Piece, background: [u8; 3], square: Size) -> Option<&Protocol> {
-        let key = (piece, background, square);
+    /// The `crop` cells of `graphic` drawn centered on a square of `square` cells filled with
+    /// `background`.
+    pub fn get(
+        &mut self,
+        graphic: Graphic,
+        background: [u8; 3],
+        square: Size,
+        crop: Rect,
+    ) -> Option<&Protocol> {
+        let key = (graphic, background, square, crop);
         if !self.cache.contains_key(&key) {
-            let image = self.compose(piece, background, square);
+            let mut image = self.compose(graphic, background, square);
+            if crop.as_size() != square {
+                let font = self.picker.font_size();
+                let (fw, fh) = (u32::from(font.width), u32::from(font.height));
+                image = image.crop_imm(
+                    u32::from(crop.x) * fw,
+                    u32::from(crop.y) * fh,
+                    u32::from(crop.width) * fw,
+                    u32::from(crop.height) * fh,
+                );
+            }
             let protocol = self
                 .picker
-                .new_protocol(image, square, Resize::Fit(None))
+                .new_protocol(image, crop.as_size(), Resize::Fit(None))
                 .ok()?;
             self.cache.insert(key, protocol);
         }
         self.cache.get(&key)
     }
 
-    /// Paints the piece onto an opaque square so it looks the same whatever the terminal does
+    /// Forgets encoded images so they are sent to the terminal again, e.g. after it was cleared.
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    /// Paints the graphic onto an opaque square so it looks the same whatever the terminal does
     /// with transparency.
-    fn compose(&mut self, piece: Piece, [r, g, b]: [u8; 3], square: Size) -> DynamicImage {
+    fn compose(&mut self, graphic: Graphic, [r, g, b]: [u8; 3], square: Size) -> DynamicImage {
         let font = self.picker.font_size();
         let width = u32::from(square.width) * u32::from(font.width);
         let height = u32::from(square.height) * u32::from(font.height);
         let mut canvas = RgbaImage::from_pixel(width, height, Rgba([r, g, b, 255]));
 
-        let side = (width.min(height) as f32 * PIECE_FILL) as u32;
-        if side > 0 {
-            let artwork = &self.artwork;
-            let art = self
-                .scaled
-                .entry((piece, side))
-                .or_insert_with(|| imageops::thumbnail(&artwork[&piece], side, side));
-            let x = i64::from((width - side) / 2);
-            let y = i64::from((height - side) / 2);
-            imageops::overlay(&mut canvas, art, x, y);
+        match graphic {
+            Graphic::Piece(piece) => {
+                let side = (width.min(height) as f32 * PIECE_FILL) as u32;
+                if side > 0 {
+                    let artwork = &self.artwork;
+                    let art = self
+                        .scaled
+                        .entry((piece, side))
+                        .or_insert_with(|| imageops::thumbnail(&artwork[&piece], side, side));
+                    let x = i64::from((width - side) / 2);
+                    let y = i64::from((height - side) / 2);
+                    imageops::overlay(&mut canvas, art, x, y);
+                }
+            }
+            Graphic::Dot { color } => {
+                let radius = width.min(height) as f32 * DOT_RADIUS;
+                draw_dot(&mut canvas, radius, color);
+            }
         }
         DynamicImage::ImageRgba8(canvas)
+    }
+}
+
+/// Anti-aliased filled circle in the middle of `canvas`.
+fn draw_dot(canvas: &mut RgbaImage, radius: f32, color: [u8; 3]) {
+    let (cx, cy) = (canvas.width() as f32 / 2.0, canvas.height() as f32 / 2.0);
+    for (x, y, pixel) in canvas.enumerate_pixels_mut() {
+        let distance = (x as f32 + 0.5 - cx).hypot(y as f32 + 0.5 - cy);
+        let coverage = (radius + 0.5 - distance).clamp(0.0, 1.0);
+        if coverage > 0.0 {
+            for (channel, &target) in pixel.0.iter_mut().zip(&color) {
+                *channel = (f32::from(*channel) * (1.0 - coverage) + f32::from(target) * coverage)
+                    .round() as u8;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dot_is_centered() {
+        let mut canvas = RgbaImage::from_pixel(90, 80, Rgba([200, 200, 200, 255]));
+        draw_dot(&mut canvas, 12.0, [10, 20, 30]);
+        assert_eq!(canvas.get_pixel(45, 40).0, [10, 20, 30, 255]);
+        assert_eq!(canvas.get_pixel(0, 0).0, [200, 200, 200, 255]);
+        // Same distance from the center in every direction.
+        for (x, y) in [(45 - 13, 40), (44 + 13, 40), (45, 40 - 13), (45, 39 + 13)] {
+            assert_eq!(canvas.get_pixel(x, y).0, [200, 200, 200, 255], "({x}, {y})");
+        }
+        for (x, y) in [(45 - 11, 40), (44 + 11, 40), (45, 40 - 11), (45, 39 + 11)] {
+            assert_eq!(canvas.get_pixel(x, y).0, [10, 20, 30, 255], "({x}, {y})");
+        }
     }
 }
