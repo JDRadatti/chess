@@ -207,42 +207,112 @@ pub fn bitboard_iter(bb: u64) -> BitboardIter {
 
 // Sliding piece attack generation at runtime
 
-pub fn sliding_attacks(sq: u8, ray_table: &[u64; 64], occupancy: u64) -> u64 {
-    let rays = ray_table[sq as usize];
-    let mut attacks = 0u64;
-    let r = sq_rank(sq);
-    let f = sq_file(sq);
+/// (rank step, file step) of each sliding direction. Rank 0 is rank 8, so -1 moves up the board.
+const DIRECTIONS: [(i8, i8); 8] = [
+    (-1, 0),
+    (1, 0),
+    (0, -1),
+    (0, 1),
+    (-1, -1),
+    (-1, 1),
+    (1, -1),
+    (1, 1),
+];
 
-    let directions: [(i8, i8); 8] = [
-        (-1, 0),
-        (1, 0),
-        (0, -1),
-        (0, 1),
-        (-1, -1),
-        (-1, 1),
-        (1, -1),
-        (1, 1),
-    ];
-
+const fn build_direction_rays() -> [[u64; 64]; 8] {
+    let mut table = [[0u64; 64]; 8];
     let mut d = 0;
     while d < 8 {
-        let dr = directions[d].0;
-        let df = directions[d].1;
-        let mut nr = r + dr;
-        let mut nf = f + df;
-        while in_bounds(nr, nf) {
-            let s = rank_file_to_sq(nr, nf);
-            let bit = 1u64 << s;
-            attacks |= bit;
-            if occupancy & bit != 0 {
-                break;
-            }
-            nr += dr;
-            nf += df;
+        let mut sq = 0u8;
+        while sq < 64 {
+            let (dr, df) = DIRECTIONS[d];
+            walk_ray(&mut table[d], sq, sq_rank(sq), sq_file(sq), dr, df);
+            sq += 1;
         }
         d += 1;
     }
+    table
+}
 
-    // Restrict to the piece's rays (bishop=diagonals, rook=ranks/files, queen=both)
-    attacks & rays
+/// `DIRECTION_RAYS[d][sq]`: every square from `sq` to the edge of the board in direction `d`.
+const DIRECTION_RAYS: [[u64; 64]; 8] = build_direction_rays();
+
+/// Squares a slider on `sq` attacks in direction `d`: the ray up to and including the first
+/// occupied square.
+fn ray_attacks(sq: u8, d: usize, occupancy: u64) -> u64 {
+    let ray = DIRECTION_RAYS[d][sq as usize];
+    let blockers = ray & occupancy;
+    if blockers == 0 {
+        return ray;
+    }
+    let (dr, df) = DIRECTIONS[d];
+    // Rays toward higher square numbers meet their nearest blocker at the lowest set bit.
+    let nearest = if dr * 8 + df > 0 {
+        blockers.trailing_zeros()
+    } else {
+        63 - blockers.leading_zeros()
+    };
+    // Everything past the blocker lies on the blocker's own ray in the same direction.
+    ray ^ DIRECTION_RAYS[d][nearest as usize]
+}
+
+/// Squares a slider on `sq` attacks, moving along the rays in `ray_table` (bishop, rook, or
+/// queen) and stopping at the first occupied square in each direction.
+pub fn sliding_attacks(sq: u8, ray_table: &[u64; 64], occupancy: u64) -> u64 {
+    let rays = ray_table[sq as usize];
+    let mut attacks = 0u64;
+    for (d, direction_rays) in DIRECTION_RAYS.iter().enumerate() {
+        if direction_rays[sq as usize] & rays != 0 {
+            attacks |= ray_attacks(sq, d, occupancy);
+        }
+    }
+    attacks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The old square-by-square walk, as a reference.
+    fn walked_attacks(sq: u8, ray_table: &[u64; 64], occupancy: u64) -> u64 {
+        let mut attacks = 0u64;
+        for (dr, df) in DIRECTIONS {
+            let (mut r, mut f) = (sq_rank(sq) + dr, sq_file(sq) + df);
+            while in_bounds(r, f) {
+                let bit = 1u64 << rank_file_to_sq(r, f);
+                attacks |= bit;
+                if occupancy & bit != 0 {
+                    break;
+                }
+                r += dr;
+                f += df;
+            }
+        }
+        attacks & ray_table[sq as usize]
+    }
+
+    #[test]
+    fn sliding_attacks_match_walking_the_rays() {
+        // A fixed pseudo-random sequence of occupancies, sparse to dense.
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        for i in 0..2000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let occupancy = match i % 3 {
+                0 => x & x.rotate_left(17) & x.rotate_left(31),
+                1 => x & x.rotate_left(23),
+                _ => x,
+            };
+            for sq in 0..64 {
+                for table in [&BISHOP_RAYS, &ROOK_RAYS, &QUEEN_RAYS] {
+                    assert_eq!(
+                        sliding_attacks(sq, table, occupancy),
+                        walked_attacks(sq, table, occupancy),
+                        "square {sq}, occupancy {occupancy:#x}"
+                    );
+                }
+            }
+        }
+    }
 }

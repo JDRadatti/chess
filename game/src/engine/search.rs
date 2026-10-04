@@ -1,5 +1,6 @@
 //! Iterative-deepening negamax with alpha-beta pruning and a quiescence search.
 
+use std::cmp::Reverse;
 use std::fmt::{self, Display, Formatter};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -101,16 +102,8 @@ pub fn search(
 
     let start = Instant::now();
     let history = game.history();
-    let mut searcher = Searcher {
-        stop,
-        deadline: None,
-        nodes: 0,
-        aborted: false,
-        // The root pushes its own key.
-        keys: history[..history.len() - 1].to_vec(),
-        pv: vec![vec![]; MAX_PLY + 1],
-        previous_pv: vec![],
-    };
+    // The root pushes its own key.
+    let mut searcher = Searcher::new(stop, &history[..history.len() - 1]);
     let mut best = moves[0];
 
     for depth in 1..=limits.max_depth.max(1) {
@@ -151,15 +144,7 @@ pub fn search(
 /// Scores every legal move with a one-ply search plus quiescence, from the mover's side.
 pub(crate) fn shallow_scores(game: &Game) -> Vec<(Move, i32)> {
     let stop = AtomicBool::new(false);
-    let mut searcher = Searcher {
-        stop: &stop,
-        deadline: None,
-        nodes: 0,
-        aborted: false,
-        keys: game.history().to_vec(),
-        pv: vec![vec![]; MAX_PLY + 1],
-        previous_pv: vec![],
-    };
+    let mut searcher = Searcher::new(&stop, game.history());
     let root = *game.position();
     root.legal_moves()
         .into_iter()
@@ -184,9 +169,38 @@ struct Searcher<'a> {
     pv: Vec<Vec<Move>>,
     /// Best line from the previous depth, searched first.
     previous_pv: Vec<Move>,
+    /// `move_lists[ply]` holds the moves of the node at `ply`, reused so searching doesn't
+    /// allocate.
+    move_lists: Vec<Vec<Move>>,
 }
 
-impl Searcher<'_> {
+impl<'a> Searcher<'a> {
+    /// `keys` are the repetition keys of the positions before the first one searched.
+    fn new(stop: &'a AtomicBool, keys: &[[u8; 34]]) -> Self {
+        Self {
+            stop,
+            deadline: None,
+            nodes: 0,
+            aborted: false,
+            keys: keys.to_vec(),
+            pv: vec![vec![]; MAX_PLY + 1],
+            previous_pv: vec![],
+            move_lists: vec![vec![]; MAX_PLY + 1],
+        }
+    }
+
+    /// The legal moves of `position`, in the list reserved for `ply`. Hand the list back with
+    /// [`Self::return_moves`] when done.
+    fn take_moves(&mut self, position: &Position, ply: usize) -> Vec<Move> {
+        let mut moves = std::mem::take(&mut self.move_lists[ply]);
+        moves.clear();
+        position.generate_legal_moves(!0, &mut moves);
+        moves
+    }
+
+    fn return_moves(&mut self, ply: usize, moves: Vec<Move>) {
+        self.move_lists[ply] = moves;
+    }
     /// Best score for the side to move, searching `depth` more plies.
     ///
     /// `on_pv` is true while following the previous depth's best line from the root.
@@ -217,8 +231,9 @@ impl Searcher<'_> {
             return self.quiesce(position, ply, alpha, beta);
         }
 
-        let mut moves = position.legal_moves();
+        let mut moves = self.take_moves(position, ply);
         if moves.is_empty() {
+            self.return_moves(ply, moves);
             return if in_check { -MATE + ply as i32 } else { 0 };
         }
         let pv_move = if on_pv {
@@ -230,7 +245,7 @@ impl Searcher<'_> {
 
         self.keys.push(key);
         let mut best = -INFINITY;
-        for m in moves {
+        for &m in &moves {
             let mut child = *position;
             child.apply_move_unchecked(m);
             let child_on_pv = pv_move == Some(m);
@@ -248,6 +263,7 @@ impl Searcher<'_> {
             }
         }
         self.keys.pop();
+        self.return_moves(ply, moves);
         best
     }
 
@@ -272,8 +288,9 @@ impl Searcher<'_> {
             alpha = alpha.max(best);
         }
 
-        let mut moves = position.legal_moves();
+        let mut moves = self.take_moves(position, ply);
         if moves.is_empty() {
+            self.return_moves(ply, moves);
             return if in_check { -MATE + ply as i32 } else { 0 };
         }
         if !in_check {
@@ -281,7 +298,7 @@ impl Searcher<'_> {
         }
         order_moves(position, &mut moves, None);
 
-        for m in moves {
+        for &m in &moves {
             let mut child = *position;
             child.apply_move_unchecked(m);
             let score = -self.quiesce(&child, ply + 1, -beta, -alpha);
@@ -296,6 +313,7 @@ impl Searcher<'_> {
                 }
             }
         }
+        self.return_moves(ply, moves);
         best
     }
 
@@ -343,7 +361,8 @@ fn is_capture(position: &Position, m: Move) -> bool {
 /// Sorts the most promising moves first, so alpha-beta can cut off the rest sooner: the best
 /// move from the previous depth, then captures of big pieces by small ones, then promotions.
 fn order_moves(position: &Position, moves: &mut [Move], pv_move: Option<Move>) {
-    moves.sort_by_cached_key(|&m| {
+    // Unstable sorting doesn't allocate; ties keep a deterministic, if arbitrary, order.
+    moves.sort_unstable_by_key(|&m| {
         let priority = if Some(m) == pv_move {
             1_000_000
         } else if is_capture(position, m) {
@@ -361,7 +380,7 @@ fn order_moves(position: &Position, moves: &mut [Move], pv_move: Option<Move>) {
         } else {
             0
         };
-        -priority
+        Reverse(priority)
     });
 }
 

@@ -228,10 +228,9 @@ impl Position {
 
     /// All legal moves for the side to move.
     pub fn legal_moves(&self) -> Vec<Move> {
-        let mut moves = vec![];
-        for i in 0..SQUARE_CNT {
-            moves.extend(self.legal_moves_from(Square(i as u8)));
-        }
+        // Enough for almost any position, so the list rarely has to grow.
+        let mut moves = Vec::with_capacity(64);
+        self.generate_legal_moves(!0, &mut moves);
         moves
     }
 
@@ -263,7 +262,7 @@ impl Position {
     }
 
     fn has_legal_move(&self) -> bool {
-        (0..SQUARE_CNT as u8).any(|sq| !self.legal_moves_from(Square(sq)).is_empty())
+        !self.legal_moves().is_empty()
     }
 
     /// Neither side can possibly checkmate: K vs K, K+minor vs K, or only bishops that all
@@ -895,10 +894,13 @@ impl Position {
     }
 
     fn king_square(&self, color: u8) -> u8 {
-        for sq in 0..64 {
-            let bits = self.square_bits(Square(sq));
-            if bits != 0 && (bits >> 3) == color && piece_type(bits) == KING_TYPE {
-                return sq;
+        let king = KING_TYPE | (color << 3);
+        for (i, &pair) in self.0[..32].iter().enumerate() {
+            if pair & 0b1111 == king {
+                return 2 * i as u8;
+            }
+            if pair >> 4 == king {
+                return 2 * i as u8 + 1;
             }
         }
         panic!("no king found for color {color}");
@@ -980,35 +982,31 @@ impl Position {
 
     /// Bitboard of all occupied squares (both colors).
     fn occupancy(&self) -> u64 {
-        let mut occ = 0u64;
-        let mut sq = 0u8;
-        while sq < 64 {
-            if self.square_bits(Square(sq)) != 0 {
-                occ |= 1u64 << sq;
-            }
-            sq += 1;
-        }
-        occ
+        let [white, black] = self.occupancy_by_color();
+        white | black
     }
 
-    /// Bitboard of all squares occupied by `color` (0=white, 1=black).
-    fn occupancy_by_player(&self, color: u8) -> u64 {
-        let mut occ = 0u64;
-        let mut sq = 0u8;
-        while sq < 64 {
-            let bits = self.square_bits(Square(sq));
-            if bits != 0 && (bits >> 3) == color {
-                occ |= 1u64 << sq;
+    /// Bitboards of the squares occupied by white and by black, from one pass over the board.
+    fn occupancy_by_color(&self) -> [u64; 2] {
+        let mut occ = [0u64; 2];
+        for (i, &pair) in self.0[..32].iter().enumerate() {
+            // Each byte holds two squares: the even one in the low nibble.
+            for (sq, bits) in [(2 * i, pair & 0b1111), (2 * i + 1, pair >> 4)] {
+                if bits != EMPTY {
+                    occ[usize::from(bits >> 3)] |= 1u64 << sq;
+                }
             }
-            sq += 1;
         }
         occ
     }
 
     /// Is `sq` attacked by `color` (0=white, 1=black)?
     fn is_attacked_by(&self, sq: u8, color: u8) -> bool {
-        let occ = self.occupancy();
+        self.is_attacked_by_with(sq, color, self.occupancy())
+    }
 
+    /// [`Self::is_attacked_by`] with the occupancy bitboard already known.
+    fn is_attacked_by_with(&self, sq: u8, color: u8, occ: u64) -> bool {
         // Knight
         for src in bitboard_iter(KNIGHT_ATTACKS[sq as usize]) {
             let bits = self.square_bits(Square(src));
@@ -1070,27 +1068,62 @@ impl Position {
         false
     }
 
-    // NOTE: will probably need to optimize this.
-    // Max number of moves is 218
     /// Legal moves for the piece on `s`. Empty if the square is empty or holds an opponent's piece.
     pub fn legal_moves_from(&self, s: Square) -> Vec<Move> {
-        let mut moves = Vec::with_capacity(8);
+        let mut moves = Vec::new();
+        self.generate_legal_moves(1u64 << s.0, &mut moves);
+        moves
+    }
+
+    /// Appends the legal moves of the side to move's pieces standing on `from` (a bitboard) to
+    /// `moves`. Reusing one list across calls avoids allocating for every position.
+    pub(crate) fn generate_legal_moves(&self, from: u64, moves: &mut Vec<Move>) {
         let active_player = self.active_player_bit();
-        let square_bits = self.square_bits(s);
+        let by_color = self.occupancy_by_color();
+        let friendly = by_color[usize::from(active_player)];
+        let opponent = by_color[usize::from(active_player ^ 1)];
+        let occ = friendly | opponent;
 
-        if square_bits == 0 {
-            return moves;
+        let first = moves.len();
+        for src in bitboard_iter(friendly & from) {
+            self.pseudo_legal_moves(src, occ, friendly, opponent, moves);
         }
 
-        if active_player != (square_bits >> 3) {
-            return moves;
+        // Only keep moves that don't leave the king in check, preserving their order.
+        let king_sq = self.king_square(active_player);
+        let ep_target = self.en_passant_target(active_player);
+        let in_check = self.is_attacked_by_with(king_sq, active_player ^ 1, occ);
+        // When not in check, only the king itself, a piece on a line through the king, or an
+        // en passant capture (which also empties the captured pawn's square) can expose it.
+        let king_lines = QUEEN_RAYS[king_sq as usize];
+        let mut kept = first;
+        for i in first..moves.len() {
+            let m = moves[i];
+            let src = m.src();
+            let en_passant = ep_target == Some(m.dst())
+                && piece_type(self.square_bits(Square(src))) == PAWN_TYPE;
+            let cannot_expose_king =
+                !in_check && src != king_sq && king_lines & (1u64 << src) == 0 && !en_passant;
+            if cannot_expose_king || !self.leaves_king_attacked(m, king_sq, occ, ep_target) {
+                moves[kept] = m;
+                kept += 1;
+            }
         }
+        moves.truncate(kept);
+    }
 
-        let src = s.0;
-        let pt = piece_type(square_bits);
-        let occ = self.occupancy();
-        let friendly = self.occupancy_by_player(active_player);
-        let opponent = self.occupancy_by_player(active_player ^ 1);
+    /// Moves for the piece on `src` that follow its movement rules, ignoring whether they
+    /// leave the king in check.
+    fn pseudo_legal_moves(
+        &self,
+        src: u8,
+        occ: u64,
+        friendly: u64,
+        opponent: u64,
+        moves: &mut Vec<Move>,
+    ) {
+        let active_player = self.active_player_bit();
+        let pt = piece_type(self.square_bits(Square(src)));
 
         match pt {
             KNIGHT_TYPE => {
@@ -1105,7 +1138,7 @@ impl Position {
                     moves.push(Move::new(0, src, dst));
                 }
                 // Castling
-                moves.extend(self.castling_moves(active_player));
+                self.castling_moves(active_player, occ, moves);
             }
             PAWN_TYPE => {
                 let (pushes, captures) = if active_player == 0 {
@@ -1143,11 +1176,8 @@ impl Position {
                 // White captures from rank 3 (ep target on rank 2)
                 // Black captures from rank 4 (ep target on rank 5)
                 if let Some(ep_sq) = self.en_passant_target(active_player) {
-                    let (correct_src_rank, correct_ep_rank) = if active_player == 0 {
-                        (3, 2)
-                    } else {
-                        (4, 5)
-                    };
+                    let (correct_src_rank, correct_ep_rank) =
+                        if active_player == 0 { (3, 2) } else { (4, 5) };
                     if sq_rank(src) == correct_src_rank
                         && sq_rank(ep_sq) == correct_ep_rank
                         && captures & (1u64 << ep_sq) != 0
@@ -1187,16 +1217,35 @@ impl Position {
             }
             _ => {}
         }
+    }
 
-        // Filter: only keep moves that don't leave the king in check
-        moves.retain(|&m| {
-            let mut test_fen = *self;
-            test_fen.apply_move_unchecked(m);
-            let king_sq = test_fen.king_square(active_player);
-            !test_fen.is_attacked_by(king_sq, active_player ^ 1)
-        });
+    /// Would the pseudo-legal move `m` leave the mover's king, now on `king_sq`, in check?
+    ///
+    /// `occ` is the occupancy before the move; the occupancy after it is derived from that
+    /// rather than rescanning the board.
+    fn leaves_king_attacked(&self, m: Move, king_sq: u8, occ: u64, ep_target: Option<u8>) -> bool {
+        let (src, dst) = (m.src(), m.dst());
+        let mut after = *self;
+        after.apply_move_unchecked(m);
 
-        moves
+        let mover = piece_type(self.square_bits(Square(src)));
+        let mut occ_after = (occ & !(1u64 << src)) | (1u64 << dst);
+        if mover == PAWN_TYPE && ep_target == Some(dst) {
+            // The pawn taken en passant stands beside the mover, not on `dst`.
+            let captured = if self.active_player_bit() == 0 {
+                dst + 8
+            } else {
+                dst - 8
+            };
+            occ_after &= !(1u64 << captured);
+        }
+        if mover == KING_TYPE && src.abs_diff(dst) == 2 {
+            // Castling moves the rook too.
+            occ_after = after.occupancy();
+        }
+
+        let king = if src == king_sq { dst } else { king_sq };
+        after.is_attacked_by_with(king, self.active_player_bit() ^ 1, occ_after)
     }
 
     fn en_passant_target(&self, active_player: u8) -> Option<u8> {
@@ -1210,21 +1259,19 @@ impl Position {
         Some(rank_file_to_sq(rank, file))
     }
 
-    fn castling_moves(&self, active_player: u8) -> Vec<Move> {
-        let mut moves = Vec::with_capacity(2);
+    fn castling_moves(&self, active_player: u8, occ: u64, moves: &mut Vec<Move>) {
         let castle = self.castle_bits();
 
         if active_player == 0 {
             // White: king on e1 (square 60)
             let king_sq = 60u8;
-            let occ = self.occupancy();
             // Kingside (K): king e1->g1, squares f1/g1 must be empty, king not in check
             if castle & WHITE_KINGSIDE_CASTLE != 0 {
                 let between = (1u64 << 61) | (1u64 << 62); // f1, g1
                 if occ & between == 0
-                    && !self.is_attacked_by(king_sq, 1)
-                    && !self.is_attacked_by(61, 1) // f1
-                    && !self.is_attacked_by(62, 1)
+                    && !self.is_attacked_by_with(king_sq, 1, occ)
+                    && !self.is_attacked_by_with(61, 1, occ) // f1
+                    && !self.is_attacked_by_with(62, 1, occ)
                 // g1
                 {
                     moves.push(Move::new(0, king_sq, 62));
@@ -1234,9 +1281,9 @@ impl Position {
             if castle & WHITE_QUEENSIDE_CASTLE != 0 {
                 let between = (1u64 << 57) | (1u64 << 58) | (1u64 << 59); // b1, c1, d1
                 if occ & between == 0
-                    && !self.is_attacked_by(king_sq, 1)
-                    && !self.is_attacked_by(59, 1) // d1
-                    && !self.is_attacked_by(58, 1)
+                    && !self.is_attacked_by_with(king_sq, 1, occ)
+                    && !self.is_attacked_by_with(59, 1, occ) // d1
+                    && !self.is_attacked_by_with(58, 1, occ)
                 // c1
                 {
                     moves.push(Move::new(0, king_sq, 58));
@@ -1245,14 +1292,13 @@ impl Position {
         } else {
             // Black: king on e8 (square 4)
             let king_sq = 4u8;
-            let occ = self.occupancy();
             // Kingside (k): king e8->g8
             if castle & BLACK_KINGSIDE_CASTLE != 0 {
                 let between = (1u64 << 5) | (1u64 << 6); // f8, g8
                 if occ & between == 0
-                    && !self.is_attacked_by(king_sq, 0)
-                    && !self.is_attacked_by(5, 0) // f8
-                    && !self.is_attacked_by(6, 0)
+                    && !self.is_attacked_by_with(king_sq, 0, occ)
+                    && !self.is_attacked_by_with(5, 0, occ) // f8
+                    && !self.is_attacked_by_with(6, 0, occ)
                 // g8
                 {
                     moves.push(Move::new(0, king_sq, 6));
@@ -1262,16 +1308,14 @@ impl Position {
             if castle & BLACK_QUEENSIDE_CASTLE != 0 {
                 let between = (1u64 << 1) | (1u64 << 2) | (1u64 << 3); // b8, c8, d8
                 if occ & between == 0
-                    && !self.is_attacked_by(king_sq, 0)
-                    && !self.is_attacked_by(3, 0)
-                    && !self.is_attacked_by(2, 0)
+                    && !self.is_attacked_by_with(king_sq, 0, occ)
+                    && !self.is_attacked_by_with(3, 0, occ)
+                    && !self.is_attacked_by_with(2, 0, occ)
                 {
                     moves.push(Move::new(0, king_sq, 2));
                 }
             }
         }
-
-        moves
     }
 }
 
@@ -1676,14 +1720,19 @@ pub fn perft(position: &Position, depth: u32) -> u64 {
     if depth == 0 {
         return 1;
     }
-
-    let mut count = 0u64;
-    for m in position.legal_moves() {
-        let mut next = *position;
-        next.apply_move_unchecked(m);
-        count += perft(&next, depth - 1);
+    let moves = position.legal_moves();
+    // Every legal move is one leaf; no need to play them out.
+    if depth == 1 {
+        return moves.len() as u64;
     }
-    count
+    moves
+        .into_iter()
+        .map(|m| {
+            let mut next = *position;
+            next.apply_move_unchecked(m);
+            perft(&next, depth - 1)
+        })
+        .sum()
 }
 
 /// A square on the chess board, indexed 0-63 (a8=0, h1=63).
