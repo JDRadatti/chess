@@ -165,7 +165,7 @@ pub fn run(
     (commit, dirty, subject): (String, bool, String),
 ) -> Result<Outcome, String> {
     let started = Instant::now();
-    let run_dir = repo.join("bench/target/rate").join(unix_now().to_string());
+    let run_dir = repo.join("target/rate").join(unix_now().to_string());
     fs::create_dir_all(&run_dir).map_err(|e| format!("can't create {}: {e}", run_dir.display()))?;
     let tools = find_tools(options, repo, &run_dir)?;
 
@@ -271,10 +271,9 @@ fn find_tools(options: &Options, repo: &Path, run_dir: &Path) -> Result<Tools, S
     let (stockfish_name, elo_range) = probe_stockfish(&stockfish)?;
 
     eprintln!("building the UCI engine ...");
-    let manifest = repo.join("uci/Cargo.toml");
     let status = Command::new("cargo")
-        .args(["build", "--release", "--quiet", "--manifest-path"])
-        .arg(&manifest)
+        .args(["build", "--release", "--quiet", "-p", "uci"])
+        .current_dir(repo)
         .status()
         .map_err(|e| format!("can't run cargo: {e}"))?;
     if !status.success() {
@@ -282,10 +281,10 @@ fn find_tools(options: &Options, repo: &Path, run_dir: &Path) -> Result<Tools, S
     }
     // A copy, so rebuilding during a long run doesn't change the engine mid-run.
     let uci = run_dir.join("uci");
-    fs::copy(repo.join("uci/target/release/uci"), &uci)
+    fs::copy(repo.join("target/release/uci"), &uci)
         .map_err(|e| format!("can't copy the UCI engine: {e}"))?;
 
-    let book = repo.join("bench").join(BOOK);
+    let book = repo.join("crates/bench").join(BOOK);
     if !book.is_file() {
         return Err(format!("missing opening book {}", book.display()));
     }

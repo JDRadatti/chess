@@ -25,7 +25,7 @@ use ratings::RatingRun;
 static ALLOCATOR: alloc::CountingAllocator = alloc::CountingAllocator;
 
 const USAGE: &str = "\
-usage: cargo run --release -- [command] [options]
+usage: cargo run --release -p bench -- [command] [options]
 
 commands:
   run       measure, append the result to history.jsonl, and compare (default)
@@ -120,7 +120,7 @@ fn git_state() -> (String, bool, String) {
 
 fn repo_root() -> PathBuf {
     let bench_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    bench_dir.parent().unwrap_or(bench_dir).to_path_buf()
+    bench_dir.ancestors().nth(2).unwrap_or(bench_dir).to_path_buf()
 }
 
 /// One pass of a workload, for `perf stat` to measure. Prints the node count.

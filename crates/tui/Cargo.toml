@@ -1,7 +1,9 @@
 [package]
 name = "tui"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 crossterm = "0.29.0"
@@ -10,7 +12,3 @@ anyhow = "1.0"
 game = { path = "../game" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
-
-# Decoding and scaling piece images is far too slow unoptimized.
-[profile.dev.package."*"]
-opt-level = 3
