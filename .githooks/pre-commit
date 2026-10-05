@@ -1,0 +1,3 @@
+#!/bin/sh
+[ -f Cargo.toml ] || exit 0
+exec just check
