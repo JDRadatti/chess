@@ -1,0 +1,18 @@
+#!/bin/sh
+subject=$(grep -v '^#' "$1" | head -n 1)
+
+case "$subject" in
+    fixup!*|squash!*) exit 0 ;;
+esac
+
+if ! printf '%s' "$subject" | grep -Eq '^(feat|fix|refactor|perf|docs|test|chore): .+'; then
+    echo "commit-msg: subject must be 'type: description'" >&2
+    echo "  types: feat fix refactor perf docs test chore" >&2
+    echo "  got:   $subject" >&2
+    exit 1
+fi
+
+if [ "${#subject}" -gt 60 ]; then
+    echo "commit-msg: subject is ${#subject} chars, max 60" >&2
+    exit 1
+fi

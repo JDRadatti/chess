@@ -1,0 +1,318 @@
+//! Precomputed piece attack bitboards.
+//!
+//! Each u64 bitboard has bit N set if a piece on square N can attack that square.
+//! Square numbering: a8=0, b8=1, ..., h8=7, a7=8, ..., h1=63.
+//! (rank = sq/8 where 0=rank8, 7=rank1; file = sq%8 where 0=a, 7=h)
+//!
+//! Pawn tables are stored for white only. Use `flip_rank_sq` / `flip_rank_bb` for black.
+//! Sliding tables store full rays (ignoring occupancy). At runtime, mask with occupancy
+//! to find actual reachable squares.
+
+// Const helpers
+
+pub(crate) const fn sq_rank(sq: u8) -> i8 {
+    sq as i8 / 8
+}
+
+pub(crate) const fn sq_file(sq: u8) -> i8 {
+    sq as i8 % 8
+}
+
+pub(crate) const fn rank_file_to_sq(rank: i8, file: i8) -> u8 {
+    (rank * 8 + file) as u8
+}
+
+const fn in_bounds(rank: i8, file: i8) -> bool {
+    rank >= 0 && rank < 8 && file >= 0 && file < 8
+}
+
+const fn try_set(table: &mut [u64; 64], sq: u8, rank: i8, file: i8) {
+    if in_bounds(rank, file) {
+        table[sq as usize] |= 1u64 << rank_file_to_sq(rank, file);
+    }
+}
+
+// Flip helpers (mirror vertically for black)
+
+pub(crate) const fn flip_rank_sq(sq: u8) -> u8 {
+    rank_file_to_sq(7 - sq_rank(sq), sq_file(sq))
+}
+
+pub(crate) const fn flip_rank_bb(bb: u64) -> u64 {
+    let mut result = 0u64;
+    let mut sq = 0u8;
+    while sq < 64 {
+        if bb & (1u64 << sq) != 0 {
+            result |= 1u64 << flip_rank_sq(sq);
+        }
+        sq += 1;
+    }
+    result
+}
+
+// Table builders
+
+const fn build_knight_attacks() -> [u64; 64] {
+    let mut table = [0u64; 64];
+    let mut sq = 0u8;
+    while sq < 64 {
+        let r = sq_rank(sq);
+        let f = sq_file(sq);
+        try_set(&mut table, sq, r - 2, f - 1);
+        try_set(&mut table, sq, r - 2, f + 1);
+        try_set(&mut table, sq, r - 1, f - 2);
+        try_set(&mut table, sq, r - 1, f + 2);
+        try_set(&mut table, sq, r + 1, f - 2);
+        try_set(&mut table, sq, r + 1, f + 2);
+        try_set(&mut table, sq, r + 2, f - 1);
+        try_set(&mut table, sq, r + 2, f + 1);
+        sq += 1;
+    }
+    table
+}
+
+const fn build_king_attacks() -> [u64; 64] {
+    let mut table = [0u64; 64];
+    let mut sq = 0u8;
+    while sq < 64 {
+        let r = sq_rank(sq);
+        let f = sq_file(sq);
+        try_set(&mut table, sq, r - 1, f - 1);
+        try_set(&mut table, sq, r - 1, f);
+        try_set(&mut table, sq, r - 1, f + 1);
+        try_set(&mut table, sq, r, f - 1);
+        try_set(&mut table, sq, r, f + 1);
+        try_set(&mut table, sq, r + 1, f - 1);
+        try_set(&mut table, sq, r + 1, f);
+        try_set(&mut table, sq, r + 1, f + 1);
+        sq += 1;
+    }
+    table
+}
+
+const fn build_pawn_attacks_white() -> [u64; 64] {
+    let mut table = [0u64; 64];
+    let mut sq = 0u8;
+    while sq < 64 {
+        let r = sq_rank(sq);
+        let f = sq_file(sq);
+        if r > 0 {
+            try_set(&mut table, sq, r - 1, f - 1);
+            try_set(&mut table, sq, r - 1, f + 1);
+        }
+        sq += 1;
+    }
+    table
+}
+
+const fn build_pawn_pushes_white() -> [u64; 64] {
+    let mut table = [0u64; 64];
+    let mut sq = 0u8;
+    while sq < 64 {
+        let r = sq_rank(sq);
+        let f = sq_file(sq);
+        if r > 0 {
+            table[sq as usize] |= 1u64 << rank_file_to_sq(r - 1, f);
+            if r == 6 {
+                table[sq as usize] |= 1u64 << rank_file_to_sq(r - 2, f);
+            }
+        }
+        sq += 1;
+    }
+    table
+}
+
+const fn walk_ray(table: &mut [u64; 64], sq: u8, start_r: i8, start_f: i8, dr: i8, df: i8) {
+    let mut r = start_r + dr;
+    let mut f = start_f + df;
+    while in_bounds(r, f) {
+        table[sq as usize] |= 1u64 << rank_file_to_sq(r, f);
+        r += dr;
+        f += df;
+    }
+}
+
+const fn build_bishop_rays() -> [u64; 64] {
+    let mut table = [0u64; 64];
+    let mut sq = 0u8;
+    while sq < 64 {
+        let r = sq_rank(sq);
+        let f = sq_file(sq);
+        walk_ray(&mut table, sq, r, f, -1, -1);
+        walk_ray(&mut table, sq, r, f, -1, 1);
+        walk_ray(&mut table, sq, r, f, 1, -1);
+        walk_ray(&mut table, sq, r, f, 1, 1);
+        sq += 1;
+    }
+    table
+}
+
+const fn build_rook_rays() -> [u64; 64] {
+    let mut table = [0u64; 64];
+    let mut sq = 0u8;
+    while sq < 64 {
+        let r = sq_rank(sq);
+        let f = sq_file(sq);
+        walk_ray(&mut table, sq, r, f, -1, 0);
+        walk_ray(&mut table, sq, r, f, 1, 0);
+        walk_ray(&mut table, sq, r, f, 0, -1);
+        walk_ray(&mut table, sq, r, f, 0, 1);
+        sq += 1;
+    }
+    table
+}
+
+const fn build_queen_rays() -> [u64; 64] {
+    let bishop = build_bishop_rays();
+    let rook = build_rook_rays();
+    let mut table = [0u64; 64];
+    let mut i = 0;
+    while i < 64 {
+        table[i] = bishop[i] | rook[i];
+        i += 1;
+    }
+    table
+}
+
+// Precomputed tables (computed at compile time)
+
+pub(crate) const KNIGHT_ATTACKS: [u64; 64] = build_knight_attacks();
+pub(crate) const KING_ATTACKS: [u64; 64] = build_king_attacks();
+pub(crate) const PAWN_ATTACKS_WHITE: [u64; 64] = build_pawn_attacks_white();
+pub(crate) const PAWN_PUSHES_WHITE: [u64; 64] = build_pawn_pushes_white();
+pub(crate) const BISHOP_RAYS: [u64; 64] = build_bishop_rays();
+pub(crate) const ROOK_RAYS: [u64; 64] = build_rook_rays();
+pub(crate) const QUEEN_RAYS: [u64; 64] = build_queen_rays();
+
+// Bitboard iteration
+
+pub(crate) struct BitboardIter(u64);
+
+impl Iterator for BitboardIter {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<u8> {
+        if self.0 == 0 {
+            return None;
+        }
+        let sq = self.0.trailing_zeros() as u8;
+        self.0 &= self.0 - 1;
+        Some(sq)
+    }
+}
+
+pub(crate) fn bitboard_iter(bb: u64) -> BitboardIter {
+    BitboardIter(bb)
+}
+
+// Sliding piece attack generation at runtime
+
+/// (rank step, file step) of each sliding direction. Rank 0 is rank 8, so -1 moves up the board.
+const DIRECTIONS: [(i8, i8); 8] = [
+    (-1, 0),
+    (1, 0),
+    (0, -1),
+    (0, 1),
+    (-1, -1),
+    (-1, 1),
+    (1, -1),
+    (1, 1),
+];
+
+const fn build_direction_rays() -> [[u64; 64]; 8] {
+    let mut table = [[0u64; 64]; 8];
+    let mut d = 0;
+    while d < 8 {
+        let mut sq = 0u8;
+        while sq < 64 {
+            let (dr, df) = DIRECTIONS[d];
+            walk_ray(&mut table[d], sq, sq_rank(sq), sq_file(sq), dr, df);
+            sq += 1;
+        }
+        d += 1;
+    }
+    table
+}
+
+/// `DIRECTION_RAYS[d][sq]`: every square from `sq` to the edge of the board in direction `d`.
+const DIRECTION_RAYS: [[u64; 64]; 8] = build_direction_rays();
+
+/// Squares a slider on `sq` attacks in direction `d`: the ray up to and including the first
+/// occupied square.
+fn ray_attacks(sq: u8, d: usize, occupancy: u64) -> u64 {
+    let ray = DIRECTION_RAYS[d][sq as usize];
+    let blockers = ray & occupancy;
+    if blockers == 0 {
+        return ray;
+    }
+    let (dr, df) = DIRECTIONS[d];
+    // Rays toward higher square numbers meet their nearest blocker at the lowest set bit.
+    let nearest = if dr * 8 + df > 0 {
+        blockers.trailing_zeros()
+    } else {
+        blockers.ilog2()
+    };
+    // Everything past the blocker lies on the blocker's own ray in the same direction.
+    ray ^ DIRECTION_RAYS[d][nearest as usize]
+}
+
+/// Squares a slider on `sq` attacks, moving along the rays in `ray_table` (bishop, rook, or
+/// queen) and stopping at the first occupied square in each direction.
+pub(crate) fn sliding_attacks(sq: u8, ray_table: &[u64; 64], occupancy: u64) -> u64 {
+    let rays = ray_table[sq as usize];
+    let mut attacks = 0u64;
+    for (d, direction_rays) in DIRECTION_RAYS.iter().enumerate() {
+        if direction_rays[sq as usize] & rays != 0 {
+            attacks |= ray_attacks(sq, d, occupancy);
+        }
+    }
+    attacks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The old square-by-square walk, as a reference.
+    fn walked_attacks(sq: u8, ray_table: &[u64; 64], occupancy: u64) -> u64 {
+        let mut attacks = 0u64;
+        for (dr, df) in DIRECTIONS {
+            let (mut r, mut f) = (sq_rank(sq) + dr, sq_file(sq) + df);
+            while in_bounds(r, f) {
+                let bit = 1u64 << rank_file_to_sq(r, f);
+                attacks |= bit;
+                if occupancy & bit != 0 {
+                    break;
+                }
+                r += dr;
+                f += df;
+            }
+        }
+        attacks & ray_table[sq as usize]
+    }
+
+    #[test]
+    fn sliding_attacks_match_walking_the_rays() {
+        // A fixed pseudo-random sequence of occupancies, sparse to dense.
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        for i in 0..2000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let occupancy = match i % 3 {
+                0 => x & x.rotate_left(17) & x.rotate_left(31),
+                1 => x & x.rotate_left(23),
+                _ => x,
+            };
+            for sq in 0..64 {
+                for table in [&BISHOP_RAYS, &ROOK_RAYS, &QUEEN_RAYS] {
+                    assert_eq!(
+                        sliding_attacks(sq, table, occupancy),
+                        walked_attacks(sq, table, occupancy),
+                        "square {sq}, occupancy {occupancy:#x}"
+                    );
+                }
+            }
+        }
+    }
+}
