@@ -131,23 +131,13 @@ impl Player for EnginePlayer {
         let game = game.clone();
         let settings = self.settings;
         let info = self.info.clone();
-        let casual = self.rng.chance(settings.casual_chance);
         let seed = self.rng.next();
         thread::spawn({
             let stop = Arc::clone(&stop);
             move || {
-                let limits = Limits {
-                    max_depth: settings.max_depth,
-                    time: settings.time_per_move,
-                };
-                let searched = search(&game, &limits, &stop, |progress| {
+                let chosen = think(&game, &settings, &stop, seed, |progress| {
                     info.set(Some(progress.clone()));
                 });
-                let chosen = if casual {
-                    casual_move(&game, &mut XorShift64::new(seed)).or(searched)
-                } else {
-                    searched
-                };
                 // The player may have been dropped, for example by starting a new game.
                 let _ = sender.send(chosen);
             }
@@ -174,6 +164,29 @@ impl Player for EnginePlayer {
 impl Drop for EnginePlayer {
     fn drop(&mut self) {
         self.stop_thinking();
+    }
+}
+
+/// Picks a move the way a player with `settings` does: searches, then with the settings'
+/// casual chance swaps in a random move that looks nearly as good. `seed` drives that
+/// randomness. Blocks until done; `stop` ends the search early with the best move so far.
+pub fn think(
+    game: &Game,
+    settings: &EngineSettings,
+    stop: &AtomicBool,
+    seed: u64,
+    on_info: impl FnMut(&SearchInfo),
+) -> Option<Move> {
+    let limits = Limits {
+        max_depth: settings.max_depth,
+        time: settings.time_per_move,
+    };
+    let searched = search(game, &limits, stop, on_info);
+    let mut rng = XorShift64::new(seed);
+    if rng.chance(settings.casual_chance) {
+        casual_move(game, &mut rng).or(searched)
+    } else {
+        searched
     }
 }
 
