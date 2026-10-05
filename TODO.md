@@ -5,23 +5,22 @@
 [x] cargo workspace under crates/
 [x] AGENTS.md, justfile, git hooks, pinned toolchain, clippy.toml
 [x] TODO.md tracked, in the AGENTS.md format
-[ ] workspace lints on every crate
-    [ ] formatting and mechanical clippy fixes
-    [ ] unreachable_pub: pub(crate) in binary crates
-    [ ] numeric casts: fixed outside game, expected in game
-    [ ] prints: expected in bench, debug print removed from game
-    [ ] doc lints expected per crate until Doc comments is done
-[ ] docs/ as an mdBook site, one page per crate
-[ ] git hooks enabled with just setup
-finished:
+[x] workspace lints on every crate
+    [x] formatting and mechanical clippy fixes
+    [x] unreachable_pub: pub(crate) for unreachable items
+    [x] numeric casts: fixed outside game, expected in game
+    [x] prints: expected in bench, debug print removed from game
+    [x] doc lints expected per crate until Doc comments is done
+[x] docs/ as an mdBook site, one page per crate
+[x] git hooks enabled with just setup
+finished: chore: migrate to the birdie workflow
 
 ## Doc comments
 
-[ ] game: doc comments on public items, `# Errors` and `# Panics` sections
-[ ] tui: doc comments on public items
-[ ] uci: doc comments on public items
-[ ] bench: doc comments on public items, `// SAFETY:` on the unsafe blocks in alloc.rs
-[ ] remove each crate's `#![expect(missing_docs, ...)]` once it is done
+[ ] game: doc comments on public items, `# Errors` and `# Panics` sections, tests/san_integration.rs crate doc
+[ ] tui: doc comments on public items, `# Errors` and `# Panics` sections
+[ ] bench: `// SAFETY:` on the unsafe impl and blocks in alloc.rs
+[ ] remove each crate's doc-lint `#![expect(...)]` once it is done
 finished:
 
 ## Fix move execution
