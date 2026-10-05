@@ -6,6 +6,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -91,7 +92,7 @@ pub struct Memory {
 }
 
 /// All records in `path`, oldest first. A missing file is an empty history.
-pub fn load(path: &Path) -> io::Result<Vec<Record>> {
+pub fn load<T: DeserializeOwned>(path: &Path) -> io::Result<Vec<T>> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(vec![]),
@@ -111,7 +112,7 @@ pub fn load(path: &Path) -> io::Result<Vec<Record>> {
         .collect()
 }
 
-pub fn append(path: &Path, record: &Record) -> io::Result<()> {
+pub fn append<T: Serialize>(path: &Path, record: &T) -> io::Result<()> {
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{}", serde_json::to_string(record)?)
 }
@@ -124,7 +125,7 @@ mod tests {
     fn records_round_trip_through_a_file() {
         let path = std::env::temp_dir().join(format!("bench-history-{}.jsonl", std::process::id()));
         let _ = fs::remove_file(&path);
-        assert_eq!(load(&path).unwrap(), vec![]);
+        assert_eq!(load::<Record>(&path).unwrap(), vec![]);
 
         let record = Record {
             commit: "abc1234".into(),
@@ -140,7 +141,7 @@ mod tests {
         };
         append(&path, &record).unwrap();
         append(&path, &record).unwrap();
-        assert_eq!(load(&path).unwrap(), vec![record.clone(), record]);
+        assert_eq!(load::<Record>(&path).unwrap(), vec![record.clone(), record]);
         fs::remove_file(&path).unwrap();
     }
 

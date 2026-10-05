@@ -1,13 +1,14 @@
 //! Facts about the code and machine being measured.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::history::Machine;
 
-/// Commit hash, whether the tree has uncommitted changes, and the commit subject.
-pub fn git_state(repo: &Path, history_file: &Path) -> (String, bool, String) {
+/// Commit hash, whether the tree has uncommitted changes outside `results`, and the commit
+/// subject.
+pub fn git_state(repo: &Path, results: &[PathBuf]) -> (String, bool, String) {
     let git = |args: &[&str]| -> String {
         Command::new("git")
             .arg("-C")
@@ -21,15 +22,19 @@ pub fn git_state(repo: &Path, history_file: &Path) -> (String, bool, String) {
     };
     let commit = git(&["rev-parse", "--short", "HEAD"]);
     let subject = git(&["log", "-1", "--format=%s"]);
-    // Adding a result to the history shouldn't make the next run look dirty.
-    let exclude = format!(
-        ":(exclude){}",
-        history_file
-            .strip_prefix(repo)
-            .unwrap_or(history_file)
-            .display()
-    );
-    let dirty = !git(&["status", "--porcelain", "--", ".", &exclude]).is_empty();
+    // Saving a result shouldn't make the next run look dirty.
+    let excludes: Vec<String> = results
+        .iter()
+        .map(|file| {
+            format!(
+                ":(exclude){}",
+                file.strip_prefix(repo).unwrap_or(file).display()
+            )
+        })
+        .collect();
+    let mut status = vec!["status", "--porcelain", "--", "."];
+    status.extend(excludes.iter().map(String::as_str));
+    let dirty = !git(&status).is_empty();
     (commit, dirty, subject)
 }
 
