@@ -32,6 +32,11 @@ const DOT_SHADE: f32 = 0.6;
 /// outlined symbols or capital letters instead.
 const PIECE_TEXT: Style = Style::new().fg(Color::Black).add_modifier(Modifier::BOLD);
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "factor is in 0..=1"
+)]
 fn shade(color: Color, factor: f32) -> Color {
     match color {
         Color::Rgb(r, g, b) => Color::Rgb(
@@ -296,13 +301,13 @@ pub(super) fn draw_coordinates(buf: &mut Buffer, g: BoardGeometry) {
     let (w, h) = (g.square_width, g.square_height);
     for row in 0..8 {
         let sq = g.square_at_cell(row, 7);
-        let x = g.x + 8 * w - 1;
-        put_coordinate(buf, x, g.y + row * h, (b'8' - sq.0 / 8) as char, sq);
+        let right = g.x + 8 * w - 1;
+        put_coordinate(buf, right, g.y + row * h, (b'8' - sq.0 / 8) as char, sq);
     }
     for col in 0..8 {
         let sq = g.square_at_cell(7, col);
-        let (x, y) = (g.x + col * w + w - 1, g.y + 8 * h - 1);
-        put_coordinate(buf, x, y, (b'a' + sq.0 % 8) as char, sq);
+        let (right, bottom) = (g.x + col * w + w - 1, g.y + 8 * h - 1);
+        put_coordinate(buf, right, bottom, (b'a' + sq.0 % 8) as char, sq);
     }
 }
 
@@ -355,7 +360,10 @@ impl CapturesWidget {
 
     /// Slot of the `i`th captured piece, clipped to `area`.
     fn slot(area: Rect, i: usize) -> Option<Rect> {
-        let x = area.x + SLOT_WIDTH * i as u16;
+        let x = u16::try_from(i)
+            .ok()?
+            .checked_mul(SLOT_WIDTH)?
+            .checked_add(area.x)?;
         (x + SLOT_WIDTH <= area.right()).then(|| Rect::new(x, area.y, SLOT_WIDTH, 1))
     }
 

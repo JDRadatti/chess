@@ -74,8 +74,7 @@ impl Agent {
     fn cost(self) -> u32 {
         match self {
             Agent::Ours("Hard") => 10,
-            Agent::Ours("Medium") => 4,
-            Agent::Ours(FULL) => 4,
+            Agent::Ours("Medium" | FULL) => 4,
             Agent::Ours(_) => 1,
             Agent::Stockfish(_) => 2,
         }
@@ -234,10 +233,10 @@ pub(crate) fn run(
     run.dirty = dirty;
     run.subject = subject;
     run.quick = options.quick;
-    run.clock = options.clock.clone();
+    run.clock.clone_from(&options.clock);
     run.level_clock = LEVEL_CLOCK.to_string();
     run.book = BOOK.to_string();
-    run.stockfish = tools.stockfish_name.clone();
+    run.stockfish.clone_from(&tools.stockfish_name);
     run.cpu = crate::system::machine().cpu;
     run.concurrency = concurrency;
     run.minutes = started.elapsed().as_secs_f64() / 60.0;
@@ -342,6 +341,11 @@ fn parse_stockfish_uci(output: &str) -> Option<(String, (u32, u32))> {
 
 /// Neighbouring agents play each other, and each agent plays Stockfish just above and below
 /// where it's expected to be, so every rating is tied to Stockfish's scale.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "anchors are clamped to the u32 range min..=max"
+)]
 fn schedule(latest: &BTreeMap<String, f64>, (min, max): (u32, u32)) -> Vec<(Agent, Agent)> {
     let ours = our_agents();
     let mut pairings: Vec<(Agent, Agent)> = ours.windows(2).map(|w| (w[0], w[1])).collect();
@@ -383,9 +387,7 @@ fn play_all(
             let sender = sender.clone();
             let queue = &queue;
             scope.spawn(move || {
-                loop {
-                    let next = queue.lock().unwrap().pop();
-                    let Some((id, job)) = next else { break };
+                while let Some((id, job)) = queue.lock().ok().and_then(|mut q| q.pop()) {
                     let _ = sender.send(play(&job, id, tools, clock, run_dir));
                 }
             });
@@ -400,16 +402,16 @@ fn play_all(
             }
             let done = games.len();
             let elapsed = started.elapsed().as_secs();
-            let line = format!(
+            let progress = format!(
                 "  {done}/{total} games, {}:{:02} elapsed",
                 elapsed / 60,
                 elapsed % 60
             );
             if live {
-                eprint!("\r{line}  ");
+                eprint!("\r{progress}  ");
             } else if done * 10 / total.max(1) > last_tenth {
                 last_tenth = done * 10 / total.max(1);
-                eprintln!("{line}");
+                eprintln!("{progress}");
             }
         }
         if live {
@@ -503,6 +505,7 @@ fn parse_pgn(text: &str) -> Vec<PlayedGame> {
 }
 
 /// Tallies the games and fits ratings with Stockfish's settings as fixed points.
+#[expect(clippy::too_many_lines, reason = "one linear tally, fit, and report")]
 fn rate(pairings: &[(Agent, Agent)], games: &[PlayedGame]) -> Result<RatingRun, String> {
     let mut tallies: Vec<Tally> = vec![
         Tally {
@@ -560,7 +563,12 @@ fn rate(pairings: &[(Agent, Agent)], games: &[PlayedGame]) -> Result<RatingRun, 
             }
         }
     }
-    let index_of = |agent: Agent| players.iter().position(|&p| p == agent).unwrap();
+    let index_of = |agent: Agent| {
+        players
+            .iter()
+            .position(|&p| p == agent)
+            .expect("every agent in a pairing is a player")
+    };
     let fixed: Vec<Option<f64>> = players
         .iter()
         .map(|p| match p {
@@ -731,6 +739,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::float_cmp, reason = "a score of 20 out of 40 is exact")]
     fn rates_from_games() {
         let pairings = vec![
             (Agent::Ours("Hard"), Agent::Stockfish(1500)),

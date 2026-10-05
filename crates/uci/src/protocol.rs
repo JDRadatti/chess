@@ -81,7 +81,7 @@ impl Go {
             return None;
         }
         let at_least_1ms = |ms: u64| Duration::from_millis(ms.max(1));
-        let overhead = overhead.as_millis() as u64;
+        let overhead = u64::try_from(overhead.as_millis()).unwrap_or(u64::MAX);
         if let Some(movetime) = self.movetime {
             return Some(at_least_1ms(movetime.saturating_sub(overhead)));
         }

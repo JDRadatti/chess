@@ -49,7 +49,7 @@ pub(crate) fn evaluate(position: &Position) -> i32 {
         let (index, sign) = if piece_color(bits) == WHITE_MOVE {
             (sq as usize, 1)
         } else {
-            ((sq ^ 56) as usize, -1)
+            ((sq ^ 0b11_1000) as usize, -1)
         };
         let kind = piece_type(bits);
         phase += phase_weight(kind);

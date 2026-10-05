@@ -101,6 +101,7 @@ pub struct BoardGeometry {
 
 impl BoardGeometry {
     /// Board square drawn at screen row/column `(row, col)`, both 0..8 from the top left.
+    #[expect(clippy::cast_possible_truncation, reason = "row and col are below 8")]
     pub fn square_at_cell(&self, row: u16, col: u16) -> Square {
         let (row, col) = if self.flipped {
             (7 - row, 7 - col)
@@ -259,11 +260,11 @@ impl App {
         } else {
             (up, right)
         };
-        let row = (self.cursor.0 / 8) as i8;
-        let file = (self.cursor.0 % 8) as i8;
-        let row = (row - up).clamp(0, 7);
-        let file = (file + right).clamp(0, 7);
-        self.cursor = Square((row * 8 + file) as u8);
+        let row = (self.cursor.0 / 8)
+            .saturating_add_signed(up.saturating_neg())
+            .min(7);
+        let file = (self.cursor.0 % 8).saturating_add_signed(right).min(7);
+        self.cursor = Square(row * 8 + file);
     }
 
     /// Picks up the piece under the cursor, or drops the selected piece there.
@@ -418,10 +419,9 @@ impl App {
     /// Cycles images, symbols, letters; images are skipped when unavailable.
     pub fn toggle_piece_style(&mut self) {
         self.piece_style = match self.piece_style {
-            PieceStyle::Images => PieceStyle::Symbols,
             PieceStyle::Symbols => PieceStyle::Letters,
             PieceStyle::Letters if self.piece_images.is_some() => PieceStyle::Images,
-            PieceStyle::Letters => PieceStyle::Symbols,
+            PieceStyle::Images | PieceStyle::Letters => PieceStyle::Symbols,
         };
         self.request_full_redraw();
     }
@@ -458,7 +458,12 @@ impl Default for App {
 }
 
 fn wrap(index: usize, delta: isize, len: usize) -> usize {
-    (index as isize + delta).rem_euclid(len as isize) as usize
+    let step = delta.unsigned_abs() % len;
+    if delta < 0 {
+        (index + len - step) % len
+    } else {
+        (index + step) % len
+    }
 }
 
 fn random_color() -> Color {

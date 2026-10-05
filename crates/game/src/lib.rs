@@ -1,3 +1,17 @@
+#![expect(
+    missing_docs,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    reason = "doc comments are tracked in TODO.md"
+)]
+#![expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "squares, bitboard indices, and counters are small; perft checks the arithmetic"
+)]
+
 mod attacks;
 pub mod engine;
 mod player;
@@ -96,6 +110,7 @@ pub enum Color {
 }
 
 impl Color {
+    #[must_use]
     pub const fn opponent(self) -> Self {
         match self {
             Color::White => Color::Black,
@@ -442,6 +457,10 @@ impl Position {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a single-pass parser; splitting it scatters the grammar"
+    )]
     fn parse_san_core(&self, san: &str) -> Result<Move, Error> {
         // Castling
         if san == "O-O" || san == "0-0" {
@@ -912,14 +931,14 @@ impl Position {
         let square_idx = (s.0 >> 1) as usize;
         assert!(square_idx <= 31, "invalid square");
         if s.0.is_multiple_of(2) {
-            self.0[square_idx] = (self.0[square_idx] & 0b11110000) | p;
+            self.0[square_idx] = (self.0[square_idx] & 0b1111_0000) | p;
         } else {
-            self.0[square_idx] = (self.0[square_idx] & 0b00001111) | p << 4;
+            self.0[square_idx] = (self.0[square_idx] & 0b0000_1111) | p << 4;
         }
     }
 
     fn square_bits(&self, s: Square) -> u8 {
-        // Even squares are the low bits (0b1111), odd squares are the high bits(0b11110000).
+        // Even squares are the low bits (0b1111), odd squares are the high bits(0b1111_0000).
         let square_idx = (s.0 >> 1) as usize;
         assert!(square_idx <= 31, "invalid square");
         if s.0.is_multiple_of(2) {
@@ -934,7 +953,7 @@ impl Position {
     }
 
     fn castle_bits(&self) -> u8 {
-        (self.0[32] & 0b11110000) >> 4
+        (self.0[32] & 0b1111_0000) >> 4
     }
 
     fn active_player_bit(&self) -> u8 {
@@ -942,7 +961,7 @@ impl Position {
     }
 
     fn halfmove_cnt(&self) -> u8 {
-        self.0[33] & 0b01111111
+        self.0[33] & 0b0111_1111
     }
 
     fn fullmove_cnt(&self) -> u16 {
@@ -962,20 +981,20 @@ impl Position {
     }
 
     fn set_castle_bits(&mut self, bits: u8) {
-        self.0[32] = (self.0[32] & 0b00001111) | (bits << 4);
+        self.0[32] = (self.0[32] & 0b0000_1111) | (bits << 4);
     }
 
     fn set_en_passant(&mut self, file: u8, has_ep: bool) {
         let ep_bits = if has_ep { 0b1000 | file } else { 0 };
-        self.0[32] = (self.0[32] & 0b11110000) | ep_bits;
+        self.0[32] = (self.0[32] & 0b1111_0000) | ep_bits;
     }
 
     fn set_active_player(&mut self, player: u8) {
-        self.0[33] = (self.0[33] & 0b01111111) | (player << 7);
+        self.0[33] = (self.0[33] & 0b0111_1111) | (player << 7);
     }
 
     fn set_halfmove_cnt(&mut self, cnt: u8) {
-        self.0[33] = (self.0[33] & 0b10000000) | (cnt & 0b01111111);
+        self.0[33] = (self.0[33] & 0b1000_0000) | (cnt & 0b0111_1111);
     }
 
     fn set_fullmove_cnt(&mut self, cnt: u16) {
@@ -1388,6 +1407,10 @@ impl Default for Position {
 impl FromStr for Position {
     type Err = Error;
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a single-pass parser; splitting it scatters the grammar"
+    )]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let fields: Vec<&str> = s.split_whitespace().collect();
         if fields.len() != 6 {
@@ -1406,9 +1429,8 @@ impl FromStr for Position {
             let rank = i as u8; // 0 = rank 8, 7 = rank 1
             let mut file = 0u8;
             for ch in rank_str.chars() {
-                if ch.is_ascii_digit() {
-                    let empty = ch.to_digit(10).unwrap() as u8;
-                    file += empty;
+                if let Some(empty) = ch.to_digit(10) {
+                    file += empty as u8;
                 } else {
                     let piece = match ch {
                         'P' => WHITE_PAWN,
@@ -1471,11 +1493,10 @@ impl FromStr for Position {
             if !('a'..='h').contains(&file_ch) {
                 return Err(Error::InvalidFenString(s.to_string()));
             }
-            let rank_num = rank_ch.to_digit(10);
-            if rank_num.is_none() {
+            let Some(rank_num) = rank_ch.to_digit(10) else {
                 return Err(Error::InvalidFenString(s.to_string()));
-            }
-            let rank_num = rank_num.unwrap() as u8;
+            };
+            let rank_num = rank_num as u8;
             // En passant rank: 6 if white to move (black just double-pushed),
             // 3 if black to move (white just double-pushed)
             if active_player == WHITE_MOVE && rank_num != 6 {
@@ -1643,17 +1664,17 @@ impl Move {
 
     /// Source square index (0-63).
     pub const fn src(self) -> u8 {
-        ((self.0 >> 4) & 0b00111111) as u8
+        ((self.0 >> 4) & 0b0011_1111) as u8
     }
 
     /// Destination square index (0-63).
     pub const fn dst(self) -> u8 {
-        ((self.0 >> 10) & 0b00111111) as u8
+        ((self.0 >> 10) & 0b0011_1111) as u8
     }
 
     /// Promotion piece type (0 = no promotion).
     pub const fn promo(self) -> u8 {
-        (self.0 & 0b00001111) as u8
+        (self.0 & 0b0000_1111) as u8
     }
 
     /// The piece a pawn promotes to, if this is a promotion.
@@ -1814,19 +1835,8 @@ impl Default for Game {
 mod tests {
     use super::*;
 
-    fn print_memory_representation<T: std::fmt::Debug>(t: T) {
-        print!("type={} value={t:?}: ", std::any::type_name::<T>());
-        let start = (&raw const t).cast::<u8>();
-        for i in 0..std::mem::size_of::<T>() {
-            print!("{:02x} ", unsafe { *start.add(i) });
-        }
-        println!();
-    }
-
     #[test]
     fn check_size() {
-        let default = Position::new();
-        print_memory_representation(default);
         assert_eq!(std::mem::size_of::<Position>(), 36);
         assert_eq!(std::mem::size_of::<Move>(), 2);
     }

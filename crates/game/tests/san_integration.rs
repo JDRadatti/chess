@@ -1,3 +1,5 @@
+#![expect(missing_docs, reason = "doc comments are tracked in TODO.md")]
+
 use game::{Color, Error, Game, Move, Position, Status};
 use std::str::FromStr;
 
@@ -124,8 +126,8 @@ fn sq_to_alg(sq: u8) -> String {
 }
 
 fn random_move(rng: &mut Rng) -> Move {
-    let src = rng.below(64) as u8;
-    let dst = rng.below(64) as u8;
+    let src = u8::try_from(rng.below(64)).expect("below 64");
+    let dst = u8::try_from(rng.below(64)).expect("below 64");
     let s = format!("{}-{}", sq_to_alg(src), sq_to_alg(dst));
     Move::from_str(&s).expect("valid move string")
 }
@@ -144,23 +146,24 @@ fn starting_positions() -> Vec<(&'static str, Position)> {
     vec![
         (
             "startpos",
-            Position::from_str("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap(),
+            Position::from_str("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+                .expect("valid FEN"),
         ),
         (
             "kiwipete",
             Position::from_str(
                 "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
             )
-            .unwrap(),
+            .expect("valid FEN"),
         ),
         (
             "position3",
-            Position::from_str("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1").unwrap(),
+            Position::from_str("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1").expect("valid FEN"),
         ),
         (
             "position4",
             Position::from_str("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1")
-                .unwrap(),
+                .expect("valid FEN"),
         ),
     ]
 }

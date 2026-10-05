@@ -1,12 +1,12 @@
-/// Precomputed piece attack bitboards.
-///
-/// Each u64 bitboard has bit N set if a piece on square N can attack that square.
-/// Square numbering: a8=0, b8=1, ..., h8=7, a7=8, ..., h1=63.
-/// (rank = sq/8 where 0=rank8, 7=rank1; file = sq%8 where 0=a, 7=h)
-///
-/// Pawn tables are stored for white only. Use `flip_rank_sq` / `flip_rank_bb` for black.
-/// Sliding tables store full rays (ignoring occupancy). At runtime, mask with occupancy
-/// to find actual reachable squares.
+//! Precomputed piece attack bitboards.
+//!
+//! Each u64 bitboard has bit N set if a piece on square N can attack that square.
+//! Square numbering: a8=0, b8=1, ..., h8=7, a7=8, ..., h1=63.
+//! (rank = sq/8 where 0=rank8, 7=rank1; file = sq%8 where 0=a, 7=h)
+//!
+//! Pawn tables are stored for white only. Use `flip_rank_sq` / `flip_rank_bb` for black.
+//! Sliding tables store full rays (ignoring occupancy). At runtime, mask with occupancy
+//! to find actual reachable squares.
 
 // Const helpers
 

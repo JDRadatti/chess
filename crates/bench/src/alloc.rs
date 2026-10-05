@@ -26,7 +26,11 @@ fn counting() -> bool {
 fn record_allocation(size: usize) {
     ALLOCATIONS.fetch_add(1, Relaxed);
     BYTES.fetch_add(size as u64, Relaxed);
-    record_resize(size as i64);
+    record_resize(signed(size));
+}
+
+fn signed(bytes: usize) -> i64 {
+    i64::try_from(bytes).unwrap_or(i64::MAX)
 }
 
 fn record_resize(delta: i64) {
@@ -51,7 +55,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if counting() {
-            record_resize(-(layout.size() as i64));
+            record_resize(-signed(layout.size()));
         }
         unsafe { System.dealloc(ptr, layout) }
     }
@@ -60,7 +64,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         if counting() {
             ALLOCATIONS.fetch_add(1, Relaxed);
             BYTES.fetch_add(new_size as u64, Relaxed);
-            record_resize(new_size as i64 - layout.size() as i64);
+            record_resize(signed(new_size) - signed(layout.size()));
         }
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -89,7 +93,7 @@ pub(crate) fn measure<T>(f: impl FnOnce() -> T) -> (T, AllocStats) {
     let stats = AllocStats {
         allocations: ALLOCATIONS.load(Relaxed),
         bytes: BYTES.load(Relaxed),
-        peak_bytes: PEAK.load(Relaxed).max(0) as u64,
+        peak_bytes: u64::try_from(PEAK.load(Relaxed)).unwrap_or(0),
     };
     (result, stats)
 }

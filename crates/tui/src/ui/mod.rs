@@ -18,7 +18,7 @@ const INFO_WIDTH: u16 = 34;
 const MIN_INFO_HEIGHT: u16 = 24;
 const LABEL: Color = Color::DarkGray;
 
-pub fn render(app: &mut App, frame: &mut Frame) {
+pub fn render(app: &mut App, frame: &mut Frame<'_>) {
     let [board_column, info_column] =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(INFO_WIDTH)])
             .areas(frame.area());

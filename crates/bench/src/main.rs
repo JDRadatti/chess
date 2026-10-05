@@ -1,3 +1,17 @@
+#![expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "safety comments are tracked in TODO.md"
+)]
+#![expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "a command-line tool that reports to the terminal"
+)]
+#![expect(
+    clippy::cast_precision_loss,
+    reason = "counts and durations stay far below 2^52"
+)]
+
 //! Measures the chess library's speed and memory use and keeps a history of the results.
 
 mod alloc;
@@ -154,9 +168,13 @@ fn show(format: fn(&[Record]) -> String) -> ExitCode {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear measure, save, and report"
+)]
 fn run(options: &RunOptions) -> ExitCode {
     if cfg!(debug_assertions) {
-        eprintln!("warning: unoptimized build; use `cargo run --release` for real numbers");
+        eprintln!("warning: unoptimized build; use `just bench` for real numbers");
     }
     let history_file = history_file();
     let (commit, dirty, subject) = git_state();
@@ -312,7 +330,7 @@ fn parse_rate_options(flags: &[&str]) -> Result<rate::Options, String> {
 
 fn rate(options: &rate::Options) -> ExitCode {
     if cfg!(debug_assertions) {
-        eprintln!("warning: unoptimized build; use `cargo run --release`");
+        eprintln!("warning: unoptimized build; use `just bench rate`");
     }
     let ratings_file = ratings_file();
     let mut runs: Vec<RatingRun> = match history::load(&ratings_file) {

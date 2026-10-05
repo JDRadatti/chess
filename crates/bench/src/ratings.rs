@@ -59,7 +59,7 @@ pub(crate) struct Pairing {
 /// The latest run in detail, then one line per run.
 pub(crate) fn report(runs: &[RatingRun]) -> String {
     let Some(latest) = runs.last() else {
-        return "no ratings yet; run `cargo run --release -- rate`\n".to_string();
+        return "no ratings yet; run `just bench rate`\n".to_string();
     };
     let mut out = details(latest);
     if runs.len() > 1 {

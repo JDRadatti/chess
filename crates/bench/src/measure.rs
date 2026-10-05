@@ -106,6 +106,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[expect(clippy::float_cmp, reason = "medians of small integers are exact")]
     fn median_of_odd_and_even_counts() {
         assert_eq!(median(&mut [3.0, 1.0, 2.0]), 2.0);
         assert_eq!(median(&mut [4.0, 1.0, 3.0, 2.0]), 2.5);

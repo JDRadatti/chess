@@ -156,6 +156,12 @@ impl PieceImages {
 
     /// Paints the graphic onto an opaque square so it looks the same whatever the terminal does
     /// with transparency.
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "image sizes are a few hundred pixels"
+    )]
     fn compose(&mut self, graphic: Graphic, [r, g, b]: [u8; 3], square: Size) -> DynamicImage {
         let font = self.picker.font_size();
         let width = u32::from(square.width) * u32::from(font.width);
@@ -171,9 +177,9 @@ impl PieceImages {
                         .scaled
                         .entry((piece, side))
                         .or_insert_with(|| imageops::thumbnail(&artwork[&piece], side, side));
-                    let x = i64::from((width - side) / 2);
-                    let y = i64::from((height - side) / 2);
-                    imageops::overlay(&mut canvas, art, x, y);
+                    let left = i64::from((width - side) / 2);
+                    let top = i64::from((height - side) / 2);
+                    imageops::overlay(&mut canvas, art, left, top);
                 }
             }
             Graphic::Dot { color } => {
@@ -186,6 +192,12 @@ impl PieceImages {
 }
 
 /// Anti-aliased filled circle in the middle of `canvas`.
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "image sizes are a few hundred pixels and each channel blends two u8 values"
+)]
 fn draw_dot(canvas: &mut RgbaImage, radius: f32, color: [u8; 3]) {
     let (cx, cy) = (canvas.width() as f32 / 2.0, canvas.height() as f32 / 2.0);
     for (x, y, pixel) in canvas.enumerate_pixels_mut() {

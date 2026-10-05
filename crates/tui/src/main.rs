@@ -1,3 +1,10 @@
+#![expect(
+    missing_docs,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    reason = "doc comments are tracked in TODO.md"
+)]
+
 /// Application.
 pub mod app;
 

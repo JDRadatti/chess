@@ -14,7 +14,7 @@ use game::{Piece, PieceKind, engine::Level};
 type ButtonLine = (usize, Button);
 
 pub(super) fn promotion(
-    frame: &mut Frame,
+    frame: &mut Frame<'_>,
     anchor: Rect,
     choice: usize,
     color: game::Color,
@@ -53,7 +53,7 @@ pub(super) fn promotion(
 /// Color and opponent pickers. `color` and `level` are marked as chosen; the row at `focus`
 /// is under the keyboard cursor.
 pub(super) fn new_game(
-    frame: &mut Frame,
+    frame: &mut Frame<'_>,
     anchor: Rect,
     color: ColorChoice,
     level: Level,
@@ -112,7 +112,7 @@ pub(super) fn new_game(
 }
 
 pub(super) fn game_over(
-    frame: &mut Frame,
+    frame: &mut Frame<'_>,
     anchor: Rect,
     app: &App,
     status: &str,
@@ -147,7 +147,7 @@ fn option_line(text: String, highlighted: bool) -> Line<'static> {
 
 /// Draws a bordered popup sized to `lines`, centered on `anchor` and kept inside the frame.
 fn draw(
-    frame: &mut Frame,
+    frame: &mut Frame<'_>,
     anchor: Rect,
     title: &str,
     lines: Vec<Line<'static>>,
@@ -160,10 +160,12 @@ fn draw(
         .map(Line::width)
         .chain([title.len()])
         .max()
-        .unwrap_or(0) as u16;
+        .unwrap_or(0);
+    let content_width = u16::try_from(content_width).unwrap_or(u16::MAX);
+    let content_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let bounds = frame.area();
-    let width = (content_width + 4).min(bounds.width);
-    let height = (lines.len() as u16 + 2).min(bounds.height);
+    let width = content_width.saturating_add(4).min(bounds.width);
+    let height = content_height.saturating_add(2).min(bounds.height);
     let x = (anchor.x + anchor.width / 2)
         .saturating_sub(width / 2)
         .clamp(bounds.x, bounds.right() - width);
@@ -173,7 +175,10 @@ fn draw(
     let area = Rect::new(x, y, width, height);
 
     for &(line, button) in clickable {
-        let row = area.y + 1 + line as u16;
+        let Ok(line) = u16::try_from(line) else {
+            continue;
+        };
+        let row = area.y + 1 + line;
         if row < area.bottom() - 1 {
             buttons.push((Rect::new(area.x + 1, row, area.width - 2, 1), button));
         }

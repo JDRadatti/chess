@@ -219,7 +219,7 @@ impl<'a> Searcher<'a> {
         }
 
         let key = position.repetition_key();
-        if ply > 0 && (self.is_draw(position) || self.is_repetition(position, &key)) {
+        if ply > 0 && (Self::is_draw(position) || self.is_repetition(position, &key)) {
             return 0;
         }
 
@@ -329,7 +329,7 @@ impl<'a> Searcher<'a> {
     }
 
     /// Draws that don't depend on the moves: the fifty-move rule and bare material.
-    fn is_draw(&self, position: &Position) -> bool {
+    fn is_draw(position: &Position) -> bool {
         position.halfmove_cnt() >= FIFTY_MOVE_RULE_PLIES || position.is_insufficient_material()
     }
 

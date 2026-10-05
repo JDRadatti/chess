@@ -1,5 +1,6 @@
 //! Tables comparing runs.
 
+use std::fmt::Write as _;
 use std::io::IsTerminal;
 
 use crate::history::{Counters, Record, Workload};
@@ -203,7 +204,7 @@ pub(crate) fn compare(records: &[Record]) -> String {
         color: std::io::stdout().is_terminal(),
     };
     let Some(latest) = records.last() else {
-        return "No results yet. Run `cargo run --release` in bench/ to record one.\n".into();
+        return "No results yet. Run `just bench` to record one.\n".into();
     };
     // Only runs over the same positions and depth can be compared.
     let comparable: Vec<&Record> = records
@@ -215,10 +216,10 @@ pub(crate) fn compare(records: &[Record]) -> String {
     let previous = comparable.iter().rev().nth(1).copied();
 
     let mut out = String::new();
-    out += &format!("latest    {}\n", describe(latest));
+    let _ = writeln!(out, "latest    {}", describe(latest));
     match previous {
         Some(p) => {
-            out += &format!("previous  {}\n", describe(p));
+            let _ = writeln!(out, "previous  {}", describe(p));
             if p.machine.cpu != latest.machine.cpu {
                 out += &style.paint("warning: different CPU; speeds are not comparable\n", "33");
             }
@@ -226,8 +227,9 @@ pub(crate) fn compare(records: &[Record]) -> String {
         None => out += "previous  none with the same suite\n",
     }
     out += "\n";
-    out += &format!(
-        "{:<32}{:>12}{:>12}{:>10}{:>12}\n",
+    let _ = writeln!(
+        out,
+        "{:<32}{:>12}{:>12}{:>10}{:>12}",
         "metric", "previous", "latest", "change", "best"
     );
 
@@ -266,8 +268,9 @@ pub(crate) fn compare(records: &[Record]) -> String {
             }
             _ => format!("{:>10}", ""),
         };
-        out += &format!(
-            "{:<32}{:>12}{:>12}{change}{:>12}\n",
+        let _ = writeln!(
+            out,
+            "{:<32}{:>12}{:>12}{change}{:>12}",
             metric.name,
             format_value(before, metric.decimals),
             format_value(now, metric.decimals),
@@ -282,18 +285,22 @@ pub(crate) fn history(records: &[Record]) -> String {
     let metrics = metrics();
     let mut out = format!("{:<22}{:<10}", "date", "commit");
     for (_, short) in HISTORY_COLUMNS {
-        out += &format!("{short:>13}");
+        let _ = write!(out, "{short:>13}");
     }
     out += "\n";
     for r in records {
         let commit = format!("{}{}", r.commit, if r.dirty { "+" } else { "" });
-        out += &format!("{:<22}{commit:<10}", format_timestamp(r.timestamp));
+        let _ = write!(out, "{:<22}{commit:<10}", format_timestamp(r.timestamp));
         for (name, _) in HISTORY_COLUMNS {
             let metric = metrics
                 .iter()
                 .find(|m| m.name == name)
                 .expect("known metric");
-            out += &format!("{:>13}", format_value((metric.value)(r), metric.decimals));
+            let _ = write!(
+                out,
+                "{:>13}",
+                format_value((metric.value)(r), metric.decimals)
+            );
         }
         out += "\n";
     }

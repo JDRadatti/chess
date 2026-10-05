@@ -67,7 +67,7 @@ impl Engine {
             return true;
         };
         match command {
-            "uci" => self.identify(),
+            "uci" => Self::identify(),
             "isready" => send("readyok"),
             "setoption" => self.set_option(args),
             "ucinewgame" => {
@@ -90,7 +90,7 @@ impl Engine {
         true
     }
 
-    fn identify(&self) {
+    fn identify() {
         send(concat!("id name chess ", env!("CARGO_PKG_VERSION")));
         send("id author Justin");
         let levels: Vec<String> = Strength::ALL

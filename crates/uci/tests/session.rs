@@ -17,8 +17,8 @@ impl Session {
             .stdout(Stdio::piped())
             .spawn()
             .expect("the uci binary starts");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+        let stdin = child.stdin.take().expect("stdin is piped");
+        let stdout = BufReader::new(child.stdout.take().expect("stdout is piped")).lines();
         Self {
             child,
             stdin,
@@ -27,14 +27,14 @@ impl Session {
     }
 
     fn send(&mut self, line: &str) {
-        writeln!(self.stdin, "{line}").unwrap();
+        writeln!(self.stdin, "{line}").expect("the engine reads stdin");
     }
 
     /// Lines up to and including the first one starting with `prefix`.
     fn read_until(&mut self, prefix: &str) -> Vec<String> {
         let mut lines = Vec::new();
         for line in &mut self.stdout {
-            let line = line.unwrap();
+            let line = line.expect("the engine writes UTF-8");
             let done = line.starts_with(prefix);
             lines.push(line);
             if done {

@@ -95,7 +95,7 @@ pub(crate) fn peak_rss_kib() -> u64 {
 
 /// `2026-10-03 23:50 UTC` for a Unix timestamp.
 pub(crate) fn format_timestamp(seconds: u64) -> String {
-    let days = (seconds / 86_400) as i64;
+    let days = i64::try_from(seconds / 86_400).unwrap_or(i64::MAX);
     let minutes_today = (seconds % 86_400) / 60;
     // Howard Hinnant's days-to-civil algorithm.
     let z = days + 719_468;

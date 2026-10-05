@@ -141,6 +141,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::float_cmp, reason = "fixed ratings are returned exactly")]
     fn a_75_percent_score_is_about_190_points_better() {
         let fit = fit(&[Some(1500.0), None], &[results(1, 0, 750, 0, 250)]).unwrap();
         assert_eq!(fit.ratings[0], 1500.0);
