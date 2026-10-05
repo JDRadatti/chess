@@ -9,9 +9,7 @@ use crate::app::{
 
 pub fn update(app: &mut App, key_event: KeyEvent) {
     let code = key_event.code;
-    if matches!(code, KeyCode::Char('c') | KeyCode::Char('C'))
-        && key_event.modifiers == KeyModifiers::CONTROL
-    {
+    if matches!(code, KeyCode::Char('c' | 'C')) && key_event.modifiers == KeyModifiers::CONTROL {
         app.quit();
         return;
     }

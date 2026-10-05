@@ -7,3 +7,6 @@ publish.workspace = true
 
 [dependencies]
 game = { path = "../game" }
+
+[lints]
+workspace = true

@@ -7,7 +7,7 @@ use game::{Color, Game, Move, PieceKind};
 
 /// How strongly the engine plays: one of the app's levels, or everything it has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Strength {
+pub(crate) enum Strength {
     /// Plays like the level in the app, but never thinks longer than the clock allows.
     Level(Level),
     /// Searches as deep as its share of the clock allows.
@@ -15,7 +15,7 @@ pub enum Strength {
 }
 
 impl Strength {
-    pub const ALL: [Strength; 5] = [
+    pub(crate) const ALL: [Strength; 5] = [
         Strength::Level(Level::Beginner),
         Strength::Level(Level::Easy),
         Strength::Level(Level::Medium),
@@ -23,14 +23,14 @@ impl Strength {
         Strength::Full,
     ];
 
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Strength::Level(level) => level.name(),
             Strength::Full => "Full",
         }
     }
 
-    pub fn from_name(name: &str) -> Option<Self> {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|s| s.name().eq_ignore_ascii_case(name))
@@ -39,7 +39,7 @@ impl Strength {
 
 /// Arguments of a `go` command. Times are in milliseconds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Go {
+pub(crate) struct Go {
     pub wtime: Option<u64>,
     pub btime: Option<u64>,
     pub winc: Option<u64>,
@@ -52,7 +52,7 @@ pub struct Go {
 
 impl Go {
     /// Reads the words after `go`, ignoring ones it doesn't use, such as `ponder` or `nodes`.
-    pub fn parse(args: &[&str]) -> Self {
+    pub(crate) fn parse(args: &[&str]) -> Self {
         let mut go = Go::default();
         let mut words = args.iter();
         while let Some(&word) = words.next() {
@@ -76,7 +76,7 @@ impl Go {
     ///
     /// Plans for `movestogo` more moves (30 if unknown) plus most of the increment, and always
     /// keeps `overhead` in hand for the time it takes the move to reach the GUI.
-    pub fn time_budget(&self, side: Color, overhead: Duration) -> Option<Duration> {
+    pub(crate) fn time_budget(&self, side: Color, overhead: Duration) -> Option<Duration> {
         if self.infinite {
             return None;
         }
@@ -96,7 +96,12 @@ impl Go {
 }
 
 /// Search settings for one move at `strength`.
-pub fn settings(strength: Strength, go: &Go, side: Color, overhead: Duration) -> EngineSettings {
+pub(crate) fn settings(
+    strength: Strength,
+    go: &Go,
+    side: Color,
+    overhead: Duration,
+) -> EngineSettings {
     let mut settings = match strength {
         Strength::Level(level) => level.settings(),
         Strength::Full => EngineSettings {
@@ -117,7 +122,7 @@ pub fn settings(strength: Strength, go: &Go, side: Color, overhead: Duration) ->
 
 /// The game a `position` command describes: `startpos` or `fen <six fields>`, then optionally
 /// `moves` followed by moves in UCI notation.
-pub fn parse_position(args: &[&str]) -> Result<Game, String> {
+pub(crate) fn parse_position(args: &[&str]) -> Result<Game, String> {
     let moves_at = args.iter().position(|&w| w == "moves");
     let (setup, moves) = match moves_at {
         Some(i) => (&args[..i], &args[i + 1..]),
@@ -143,7 +148,7 @@ pub fn parse_position(args: &[&str]) -> Result<Game, String> {
 }
 
 /// `e2e4` or `e7e8q`. Castling is the king's two-square move, as in UCI.
-pub fn parse_move(text: &str) -> Result<Move, String> {
+pub(crate) fn parse_move(text: &str) -> Result<Move, String> {
     let bad = || format!("bad move `{text}`");
     if !text.is_ascii() || !(4..=5).contains(&text.len()) {
         return Err(bad());
@@ -158,7 +163,7 @@ pub fn parse_move(text: &str) -> Result<Move, String> {
     ours.parse().map_err(|_| bad())
 }
 
-pub fn format_move(m: Move) -> String {
+pub(crate) fn format_move(m: Move) -> String {
     let square = |sq: u8| format!("{}{}", (b'a' + sq % 8) as char, (b'8' - sq / 8) as char);
     let promotion = match m.promotion() {
         Some(PieceKind::Queen) => "q",
@@ -172,7 +177,7 @@ pub fn format_move(m: Move) -> String {
 
 /// An `info` line for a finished depth. UCI scores are from the side to move's point of view;
 /// ours are from White's.
-pub fn format_info(info: &SearchInfo, side: Color) -> String {
+pub(crate) fn format_info(info: &SearchInfo, side: Color) -> String {
     let sign = if side == Color::White { 1 } else { -1 };
     let score = match info.score {
         Score::Centipawns(cp) => format!("cp {}", sign * cp),
@@ -190,7 +195,7 @@ pub fn format_info(info: &SearchInfo, side: Color) -> String {
 }
 
 /// The name and value of `setoption name <name> value <value>`; both may contain spaces.
-pub fn parse_setoption(args: &[&str]) -> Option<(String, String)> {
+pub(crate) fn parse_setoption(args: &[&str]) -> Option<(String, String)> {
     let ["name", rest @ ..] = args else {
         return None;
     };

@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering::Relaxed};
 
 /// Forwards to the system allocator, counting while [`measure`] runs.
-pub struct CountingAllocator;
+pub(crate) struct CountingAllocator;
 
 thread_local! {
     /// Only the thread inside [`measure`] counts.
@@ -67,7 +67,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AllocStats {
+pub(crate) struct AllocStats {
     /// Calls to allocate or grow memory.
     pub allocations: u64,
     /// Total bytes requested by those calls.
@@ -78,7 +78,7 @@ pub struct AllocStats {
 
 /// Runs `f` and counts the allocations it makes on this thread. Not reentrant, and only one
 /// thread may measure at a time.
-pub fn measure<T>(f: impl FnOnce() -> T) -> (T, AllocStats) {
+pub(crate) fn measure<T>(f: impl FnOnce() -> T) -> (T, AllocStats) {
     ALLOCATIONS.store(0, Relaxed);
     BYTES.store(0, Relaxed);
     LIVE.store(0, Relaxed);
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn counts_allocations_inside_measure_only() {
-        let (_, stats) = measure(|| {
+        let ((), stats) = measure(|| {
             let a = vec![0u8; 1000];
             let b = vec![0u8; 500];
             drop(a);

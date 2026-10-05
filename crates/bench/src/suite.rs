@@ -1,10 +1,10 @@
 //! The fixed positions every run measures. Changing them makes old results incomparable, so
 //! bump [`SUITE_VERSION`] when you do.
 
-pub const SUITE_VERSION: u32 = 1;
+pub(crate) const SUITE_VERSION: u32 = 1;
 
 /// FEN, depth, and the known leaf count, which doubles as a correctness check.
-pub const PERFT_CASES: [(&str, u32, u64); 4] = [
+pub(crate) const PERFT_CASES: [(&str, u32, u64); 4] = [
     (
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         4,
@@ -25,10 +25,10 @@ pub const PERFT_CASES: [(&str, u32, u64); 4] = [
 
 /// Depth of the fixed-depth search over [`SEARCH_POSITIONS`]. Depth 4 takes several seconds
 /// per pass today; raise it (and the suite version) once the search gets faster.
-pub const SEARCH_DEPTH: u8 = 3;
+pub(crate) const SEARCH_DEPTH: u8 = 3;
 
 /// Openings, middlegames, and endgames, mostly from Stockfish's `bench` command.
-pub const SEARCH_POSITIONS: [&str; 24] = [
+pub(crate) const SEARCH_POSITIONS: [&str; 24] = [
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
     "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 10",
     "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 11",
@@ -58,7 +58,7 @@ pub const SEARCH_POSITIONS: [&str; 24] = [
 
 /// Positions for measuring how deep the engine gets in a fixed time: the start, two
 /// middlegames, and an endgame.
-pub const TIMED_POSITIONS: [&str; 4] = [
+pub(crate) const TIMED_POSITIONS: [&str; 4] = [
     SEARCH_POSITIONS[0],
     SEARCH_POSITIONS[4],
     SEARCH_POSITIONS[9],
@@ -66,7 +66,7 @@ pub const TIMED_POSITIONS: [&str; 4] = [
 ];
 
 /// Thinking times for the depth-reached measurement, matching the Medium and Hard levels.
-pub const TIMED_MILLIS: [u64; 2] = [500, 2000];
+pub(crate) const TIMED_MILLIS: [u64; 2] = [500, 2000];
 
 #[cfg(test)]
 mod tests {

@@ -32,7 +32,7 @@ fn parse_pgn_moves(pgn: &str) -> Vec<String> {
         match ch {
             '{' => {
                 chars.next();
-                while let Some(c) = chars.next() {
+                for c in chars.by_ref() {
                     if c == '}' {
                         break;
                     }
@@ -41,7 +41,7 @@ fn parse_pgn_moves(pgn: &str) -> Vec<String> {
             '[' => {
                 // Skip PGN tag pairs like [Event "Opera Game"]
                 chars.next();
-                while let Some(c) = chars.next() {
+                for c in chars.by_ref() {
                     if c == ']' {
                         break;
                     }
@@ -50,7 +50,7 @@ fn parse_pgn_moves(pgn: &str) -> Vec<String> {
             '(' => {
                 chars.next();
                 let mut depth = 1;
-                while let Some(c) = chars.next() {
+                for c in chars.by_ref() {
                     match c {
                         '(' => depth += 1,
                         ')' => {
@@ -118,8 +118,8 @@ fn is_result(s: &str) -> bool {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn sq_to_alg(sq: u8) -> String {
-    let file = (sq % 8) as u8;
-    let rank = (sq / 8) as u8;
+    let file = sq % 8;
+    let rank = sq / 8;
     format!("{}{}", (b'a' + file) as char, (b'1' + (7 - rank)) as char)
 }
 
@@ -144,8 +144,7 @@ fn starting_positions() -> Vec<(&'static str, Position)> {
     vec![
         (
             "startpos",
-            Position::from_str("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
-                .unwrap(),
+            Position::from_str("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap(),
         ),
         (
             "kiwipete",
@@ -160,10 +159,8 @@ fn starting_positions() -> Vec<(&'static str, Position)> {
         ),
         (
             "position4",
-            Position::from_str(
-                "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
-            )
-            .unwrap(),
+            Position::from_str("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1")
+                .unwrap(),
         ),
     ]
 }
@@ -182,8 +179,8 @@ fn pgn_roundtrip_famous_games() {
     ];
 
     for file in &pgn_files {
-        let pgn = std::fs::read_to_string(file)
-            .unwrap_or_else(|e| panic!("Failed to read {}: {}", file, e));
+        let pgn =
+            std::fs::read_to_string(file).unwrap_or_else(|e| panic!("Failed to read {file}: {e}"));
         let moves = parse_pgn_moves(&pgn);
 
         let mut game = Game::new();
@@ -192,17 +189,13 @@ fn pgn_roundtrip_famous_games() {
             let m = game
                 .position()
                 .parse_san(san)
-                .unwrap_or_else(|e| panic!("Failed to parse '{}' in {}: {:?}", san, file, e));
+                .unwrap_or_else(|e| panic!("Failed to parse '{san}' in {file}: {e:?}"));
 
             let formatted = game.position().to_san(&m);
-            assert_eq!(
-                &formatted, san,
-                "Round-trip failed for '{}' in {}",
-                san, file
-            );
+            assert_eq!(&formatted, san, "Round-trip failed for '{san}' in {file}");
 
             game.play(m)
-                .unwrap_or_else(|e| panic!("Failed to apply '{}' in {}: {:?}", san, file, e));
+                .unwrap_or_else(|e| panic!("Failed to apply '{san}' in {file}: {e:?}"));
         }
 
         if file.ends_with("scholars_mate.pgn") {
@@ -224,8 +217,8 @@ fn exhaustive_san_roundtrip() {
             let san = fen.to_san(m);
             let m2 = fen
                 .parse_san(&san)
-                .unwrap_or_else(|e| panic!("Failed to parse '{}' from {}: {:?}", san, name, e));
-            assert_eq!(m, &m2, "Round-trip failed for '{}' from {}", san, name);
+                .unwrap_or_else(|e| panic!("Failed to parse '{san}' from {name}: {e:?}"));
+            assert_eq!(m, &m2, "Round-trip failed for '{san}' from {name}");
         }
     }
 }
@@ -257,19 +250,19 @@ fn invalid_moves_rejected() {
 
 #[test]
 fn invalid_san_strings_rejected() {
-    let fen = Position::from_str("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
+    let fen =
+        Position::from_str("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
 
     let invalid = [
-        "Xe4", "Ze4", "Ke9", "Qe9", "Ne9", "Be9", "Re9", "xe4", "e9", "e0", "e", "Q", "N",
-        "B", "R", "K", "O-O-O-O", "0-0-0-0", "e4e5", "e4-e5", "e4xe5", "e4x", "x", "",
-        "  ", "e4+", "e4#", "e4!!", "e4??", "e4!?", "Nf3x", "Nf3xx", "Nf3x9", "Nf3x0",
+        "Xe4", "Ze4", "Ke9", "Qe9", "Ne9", "Be9", "Re9", "xe4", "e9", "e0", "e", "Q", "N", "B",
+        "R", "K", "O-O-O-O", "0-0-0-0", "e4e5", "e4-e5", "e4xe5", "e4x", "x", "", "  ", "e4+",
+        "e4#", "e4!!", "e4??", "e4!?", "Nf3x", "Nf3xx", "Nf3x9", "Nf3x0",
     ];
 
     for san in &invalid {
         assert!(
             fen.parse_san(san).is_err(),
-            "Invalid SAN '{}' was accepted",
-            san
+            "Invalid SAN '{san}' was accepted"
         );
     }
 }
@@ -288,8 +281,8 @@ fn fuzz_roundtrip_with_invalid_moves() {
     ];
 
     for file in &pgn_files {
-        let pgn = std::fs::read_to_string(file)
-            .unwrap_or_else(|e| panic!("Failed to read {}: {}", file, e));
+        let pgn =
+            std::fs::read_to_string(file).unwrap_or_else(|e| panic!("Failed to read {file}: {e}"));
         let moves = parse_pgn_moves(&pgn);
 
         let mut fen =
@@ -299,17 +292,13 @@ fn fuzz_roundtrip_with_invalid_moves() {
         for san in &moves {
             let m = fen
                 .parse_san(san)
-                .unwrap_or_else(|e| panic!("Failed to parse '{}' in {}: {:?}", san, file, e));
+                .unwrap_or_else(|e| panic!("Failed to parse '{san}' in {file}: {e:?}"));
 
             let formatted = fen.to_san(&m);
-            assert_eq!(
-                &formatted, san,
-                "Round-trip failed for '{}' in {}",
-                san, file
-            );
+            assert_eq!(&formatted, san, "Round-trip failed for '{san}' in {file}");
 
             fen = apply_move(&fen, m)
-                .unwrap_or_else(|e| panic!("Failed to apply '{}' in {}: {:?}", san, file, e));
+                .unwrap_or_else(|e| panic!("Failed to apply '{san}' in {file}: {e:?}"));
 
             // Interspersed invalid move attempts
             for _ in 0..5 {
@@ -353,8 +342,9 @@ fn promotion_roundtrip() {
 #[test]
 fn mate_suffix() {
     // Scholar's mate: after 1.e4 e5 2.Bc4 Nc6 3.Qh5 Nf6, Qxf7 is mate
-    let fen = Position::from_str("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4")
-        .unwrap();
+    let fen =
+        Position::from_str("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4")
+            .unwrap();
 
     let m = fen.parse_san("Qxf7#").unwrap();
     let san = fen.to_san(&m);
@@ -364,8 +354,8 @@ fn mate_suffix() {
 #[test]
 fn piece_capture_roundtrip() {
     // White bishop on e2 captures black knight on f3
-    let fen = Position::from_str("rnbqkbnr/pppppppp/8/8/8/5n2/PPPPBPPP/RNBQK1NR w KQkq - 0 1")
-        .unwrap();
+    let fen =
+        Position::from_str("rnbqkbnr/pppppppp/8/8/8/5n2/PPPPBPPP/RNBQK1NR w KQkq - 0 1").unwrap();
 
     let m = fen.parse_san("Bxf3").unwrap();
     let san = fen.to_san(&m);

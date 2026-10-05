@@ -58,32 +58,32 @@ fn is_light(sq: Square) -> bool {
 /// Board size, as the height of one square in rows. Squares are `2 * height + 1` columns wide
 /// because terminal cells are roughly twice as tall as they are wide.
 #[derive(Clone, Copy)]
-pub struct Scale(u16);
+pub(super) struct Scale(u16);
 
 impl Scale {
-    pub fn square_width(self) -> u16 {
+    pub(super) fn square_width(self) -> u16 {
         2 * self.0 + 1
     }
 
-    pub fn square_height(self) -> u16 {
+    pub(super) fn square_height(self) -> u16 {
         self.0
     }
 
-    pub fn board_width(self) -> u16 {
+    pub(super) fn board_width(self) -> u16 {
         8 * self.square_width()
     }
 
-    pub fn board_height(self) -> u16 {
+    pub(super) fn board_height(self) -> u16 {
         8 * self.square_height()
     }
 
     /// One step down, but never below the smallest size.
-    pub fn smaller(self) -> Self {
+    pub(super) fn smaller(self) -> Self {
         Scale(self.0.saturating_sub(1).max(1))
     }
 
     /// Largest scale whose board fits inside `area`.
-    pub fn fitting(area: Rect) -> Option<Self> {
+    pub(super) fn fitting(area: Rect) -> Option<Self> {
         (1..=MAX_SCALE)
             .rev()
             .map(Scale)
@@ -92,7 +92,7 @@ impl Scale {
 }
 
 /// Character for `piece`: outlined symbols for white, filled for black, or FEN letters.
-pub fn glyph(piece: Piece, unicode: bool) -> char {
+pub(super) fn glyph(piece: Piece, unicode: bool) -> char {
     if !unicode {
         return piece.symbol();
     }
@@ -113,7 +113,7 @@ pub fn glyph(piece: Piece, unicode: bool) -> char {
     }
 }
 
-pub struct BoardWidget<'a> {
+pub(super) struct BoardWidget<'a> {
     position: &'a Position,
     geometry: BoardGeometry,
     cursor: Square,
@@ -129,7 +129,7 @@ pub struct BoardWidget<'a> {
 }
 
 /// Where to draw a piece image and the square color behind it.
-pub struct Sprite {
+pub(super) struct Sprite {
     /// Where the image goes; may be narrower than the square to leave room for a coordinate.
     pub area: Rect,
     /// Size of the whole square, which the graphic is centered in.
@@ -155,7 +155,7 @@ fn image_region(g: BoardGeometry, row: u16, col: u16) -> Rect {
 }
 
 impl<'a> BoardWidget<'a> {
-    pub fn new(app: &'a App, geometry: BoardGeometry) -> Self {
+    pub(super) fn new(app: &'a App, geometry: BoardGeometry) -> Self {
         let game = app.game_match.game();
         let position = game.position();
         let targets = app
@@ -192,7 +192,7 @@ impl<'a> BoardWidget<'a> {
     }
 
     /// Piece images to draw over the board, if pieces are drawn as images.
-    pub fn sprites(&self) -> Vec<Sprite> {
+    pub(super) fn sprites(&self) -> Vec<Sprite> {
         if !self.images {
             return vec![];
         }
@@ -292,7 +292,7 @@ impl Widget for BoardWidget<'_> {
 ///
 /// Must run after piece images are drawn; the images on these squares leave the coordinate
 /// column uncovered.
-pub fn draw_coordinates(buf: &mut Buffer, g: BoardGeometry) {
+pub(super) fn draw_coordinates(buf: &mut Buffer, g: BoardGeometry) {
     let (w, h) = (g.square_width, g.square_height);
     for row in 0..8 {
         let sq = g.square_at_cell(row, 7);
@@ -320,7 +320,7 @@ fn put_coordinate(buf: &mut Buffer, x: u16, y: u16, label: char, sq: Square) {
 }
 
 /// Pieces `captor` has taken, on a tray styled like the board, plus its material lead.
-pub struct CapturesWidget {
+pub(super) struct CapturesWidget {
     captured: Vec<Piece>,
     lead: i32,
     unicode: bool,
@@ -331,7 +331,7 @@ pub struct CapturesWidget {
 const SLOT_WIDTH: u16 = 2;
 
 impl CapturesWidget {
-    pub fn new(app: &App, captor: game::Color) -> Self {
+    pub(super) fn new(app: &App, captor: game::Color) -> Self {
         let position = app.game_match.game().position();
         let victim = captor.opponent();
         let mut captured = vec![];
@@ -360,7 +360,7 @@ impl CapturesWidget {
     }
 
     /// Piece images to draw over the tray, if pieces are drawn as images.
-    pub fn sprites(&self, area: Rect) -> Vec<Sprite> {
+    pub(super) fn sprites(&self, area: Rect) -> Vec<Sprite> {
         if !self.images {
             return vec![];
         }

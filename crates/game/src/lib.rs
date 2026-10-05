@@ -2,7 +2,11 @@ mod attacks;
 pub mod engine;
 mod player;
 
-use attacks::*;
+use attacks::{
+    BISHOP_RAYS, KING_ATTACKS, KNIGHT_ATTACKS, PAWN_ATTACKS_WHITE, PAWN_PUSHES_WHITE, QUEEN_RAYS,
+    ROOK_RAYS, bitboard_iter, flip_rank_bb, flip_rank_sq, rank_file_to_sq, sliding_attacks,
+    sq_file, sq_rank,
+};
 pub use player::{Match, Player, RandomPlayer};
 
 use std::fmt::{self, Display, Formatter};
@@ -76,8 +80,8 @@ impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Error::InvalidFenString(fen_string) => format!("invalid fen string: {fen_string}"),
-            Error::InvalidMove => format!("invalid move"),
-            Error::GameOver => format!("game is over"),
+            Error::InvalidMove => "invalid move".to_string(),
+            Error::GameOver => "game is over".to_string(),
         }
         .fmt(f)
     }
@@ -197,9 +201,9 @@ pub enum DrawReason {
 /// Position[0..=31] = board squares.
 ///     Each square takes up 4 bits (1 for piece color, 3 for piece type, 0000 = empty)
 /// Position[32..=35] =
-///     Byte 32:     [castling:4][has_en_passant:1][en_passant_file:3]
-///     Byte 33:     [active_player:1][halfmove_cnt:7]
-///     Byte 34-35:  [fullmove_cnt:16] (little endian)
+///     Byte 32:     [castling:4][has_en_passant:1][`en_passant_file:3`]
+///     Byte 33:     [`active_player:1`][halfmove_cnt:7]
+///     Byte 34-35:  [`fullmove_cnt:16`] (little endian)
 #[derive(Debug, Clone, Copy)]
 pub struct Position([u8; 36]);
 
@@ -295,9 +299,10 @@ impl Position {
         let mut key = [0u8; 34];
         key[..32].copy_from_slice(&self.0[..32]);
         let ep_bits = match self.en_passant_target(self.active_player_bit()) {
-            Some(ep_sq) if self.legal_moves().iter().any(|m| {
-                m.dst() == ep_sq && piece_type(self.square_bits(Square(m.src()))) == PAWN_TYPE
-            }) =>
+            Some(ep_sq)
+                if self.legal_moves().iter().any(|m| {
+                    m.dst() == ep_sq && piece_type(self.square_bits(Square(m.src()))) == PAWN_TYPE
+                }) =>
             {
                 self.en_passant_bits()
             }
@@ -496,23 +501,21 @@ impl Position {
         if pt == PAWN_TYPE {
             // For pawns: [file]x[file][rank](=[piece])?
             // Check for disambiguation file (only if followed by 'x')
-            if let Some(&ch) = bytes.get(idx) {
-                if (b'a'..=b'h').contains(&ch) {
-                    if let Some(&next_ch) = bytes.get(idx + 1) {
-                        if next_ch == b'x' {
-                            disambig_file = Some((ch - b'a') as i8);
-                            idx += 1;
-                        }
-                    }
-                }
+            if let Some(&ch) = bytes.get(idx)
+                && (b'a'..=b'h').contains(&ch)
+                && let Some(&next_ch) = bytes.get(idx + 1)
+                && next_ch == b'x'
+            {
+                disambig_file = Some((ch - b'a') as i8);
+                idx += 1;
             }
 
             // Check for capture
-            if let Some(&ch) = bytes.get(idx) {
-                if ch == b'x' {
-                    is_capture = true;
-                    idx += 1;
-                }
+            if let Some(&ch) = bytes.get(idx)
+                && ch == b'x'
+            {
+                is_capture = true;
+                idx += 1;
             }
 
             // Destination square
@@ -534,11 +537,11 @@ impl Position {
         } else {
             // For pieces: [KQRBN][file]?[rank]?x?[file][rank](=[piece])?
             // First, check for capture
-            if let Some(&ch) = bytes.get(idx) {
-                if ch == b'x' {
-                    is_capture = true;
-                    idx += 1;
-                }
+            if let Some(&ch) = bytes.get(idx)
+                && ch == b'x'
+            {
+                is_capture = true;
+                idx += 1;
             }
 
             // Find the position of the destination square
@@ -635,15 +638,15 @@ impl Position {
             if piece_type(src_bits) != pt {
                 continue;
             }
-            if let Some(df) = disambig_file {
-                if sq_file(src) != df {
-                    continue;
-                }
+            if let Some(df) = disambig_file
+                && sq_file(src) != df
+            {
+                continue;
             }
-            if let Some(dr) = disambig_rank {
-                if sq_rank(src) != dr {
-                    continue;
-                }
+            if let Some(dr) = disambig_rank
+                && sq_rank(src) != dr
+            {
+                continue;
             }
             // For pawns, check capture notation
             if pt == PAWN_TYPE {
@@ -693,8 +696,7 @@ impl Position {
         } else if pt == PAWN_TYPE {
             // Pawn move
             let dst_bits = self.square_bits(Square(dst));
-            let is_capture =
-                dst_bits != 0 || self.en_passant_target(active_player) == Some(dst);
+            let is_capture = dst_bits != 0 || self.en_passant_target(active_player) == Some(dst);
             if is_capture {
                 let src_file = sq_file(src);
                 result.push((b'a' + src_file as u8) as char);
@@ -909,7 +911,7 @@ impl Position {
     fn set_square(&mut self, s: Square, p: u8) {
         let square_idx = (s.0 >> 1) as usize;
         assert!(square_idx <= 31, "invalid square");
-        if s.0 % 2 == 0 {
+        if s.0.is_multiple_of(2) {
             self.0[square_idx] = (self.0[square_idx] & 0b11110000) | p;
         } else {
             self.0[square_idx] = (self.0[square_idx] & 0b00001111) | p << 4;
@@ -920,7 +922,7 @@ impl Position {
         // Even squares are the low bits (0b1111), odd squares are the high bits(0b11110000).
         let square_idx = (s.0 >> 1) as usize;
         assert!(square_idx <= 31, "invalid square");
-        if s.0 % 2 == 0 {
+        if s.0.is_multiple_of(2) {
             self.0[square_idx] & 0b1111
         } else {
             self.0[square_idx] >> 4
@@ -1026,7 +1028,7 @@ impl Position {
         let r = sq_rank(sq);
         let f = sq_file(sq);
         let pr = r + pawn_dr;
-        if pr >= 0 && pr < 8 {
+        if (0..8).contains(&pr) {
             let pf_left = f - 1;
             let pf_right = f + 1;
             if pf_left >= 0 {
@@ -1157,7 +1159,7 @@ impl Position {
                 for dst in bitboard_iter(pushes & !occ) {
                     // Double push requires the intermediate square empty
                     if (src as i8 - dst as i8).abs() == 16 {
-                        let mid = ((src as u16 + dst as u16) / 2) as u8;
+                        let mid = u16::midpoint(u16::from(src), u16::from(dst)) as u8;
                         if occ & (1u64 << mid) != 0 {
                             continue;
                         }
@@ -1324,7 +1326,7 @@ fn is_promotion_rank(sq: u8, color: u8) -> bool {
     (color == 0 && rank == 0) || (color == 1 && rank == 7)
 }
 
-/// Starting FEN: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+/// Starting FEN: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w `KQkq` - 0 1
 impl Default for Position {
     fn default() -> Self {
         Self([
@@ -1661,10 +1663,10 @@ impl Move {
 }
 
 fn parse_square(file_ch: u8, rank_ch: u8) -> Result<u8, &'static str> {
-    if file_ch < b'a' || file_ch > b'h' {
+    if !(b'a'..=b'h').contains(&file_ch) {
         return Err("file must be a-h");
     }
-    if rank_ch < b'1' || rank_ch > b'8' {
+    if !(b'1'..=b'8').contains(&rank_ch) {
         return Err("rank must be 1-8");
     }
     let file = file_ch - b'a';
@@ -1791,7 +1793,10 @@ impl Game {
         if status != Status::Ongoing {
             return status;
         }
-        let current = self.history.last().expect("history always has the start position");
+        let current = self
+            .history
+            .last()
+            .expect("history always has the start position");
         if self.history.iter().filter(|key| *key == current).count() >= 3 {
             return Status::Draw(DrawReason::ThreefoldRepetition);
         }
@@ -1811,9 +1816,9 @@ mod tests {
 
     fn print_memory_representation<T: std::fmt::Debug>(t: T) {
         print!("type={} value={t:?}: ", std::any::type_name::<T>());
-        let start = &t as *const _ as *const u8;
+        let start = (&raw const t).cast::<u8>();
         for i in 0..std::mem::size_of::<T>() {
-            print!("{:02x} ", unsafe { *start.offset(i as isize) });
+            print!("{:02x} ", unsafe { *start.add(i) });
         }
         println!();
     }
@@ -2703,9 +2708,9 @@ mod tests {
     #[test]
     fn status_insufficient_material() {
         let draws = [
-            "4k3/8/8/8/8/8/8/4K3 w - - 0 1",   // K vs K
-            "4k3/8/8/8/8/8/8/2B1K3 w - - 0 1", // K+B vs K
-            "4k3/8/8/8/8/8/8/1N2K3 w - - 0 1", // K+N vs K
+            "4k3/8/8/8/8/8/8/4K3 w - - 0 1",    // K vs K
+            "4k3/8/8/8/8/8/8/2B1K3 w - - 0 1",  // K+B vs K
+            "4k3/8/8/8/8/8/8/1N2K3 w - - 0 1",  // K+N vs K
             "2b1k3/8/8/8/8/8/8/5BK1 w - - 0 1", // bishops on the same square color
         ];
         for fen_str in draws {
@@ -2757,9 +2762,11 @@ mod tests {
         fen.apply_move("a1-a2".parse().unwrap()).unwrap();
         assert_eq!(fen.halfmove_cnt(), 127);
         assert_eq!(fen.side_to_move(), Color::Black);
-        assert!("4k3/8/8/8/8/8/8/R3K3 w - - 128 100"
-            .parse::<Position>()
-            .is_err());
+        assert!(
+            "4k3/8/8/8/8/8/8/R3K3 w - - 128 100"
+                .parse::<Position>()
+                .is_err()
+        );
     }
 
     #[test]
@@ -2783,10 +2790,7 @@ mod tests {
             }
         }
         assert_eq!(game.moves().len(), 8);
-        assert_eq!(
-            game.status(),
-            Status::Draw(DrawReason::ThreefoldRepetition)
-        );
+        assert_eq!(game.status(), Status::Draw(DrawReason::ThreefoldRepetition));
         let m = game.position().parse_san("Nf3").unwrap();
         assert!(matches!(game.play(m), Err(Error::GameOver)));
     }
@@ -2800,10 +2804,7 @@ mod tests {
             let m = game.position().parse_san(san).unwrap();
             game.play(m).unwrap();
         }
-        assert_eq!(
-            game.status(),
-            Status::Draw(DrawReason::ThreefoldRepetition)
-        );
+        assert_eq!(game.status(), Status::Draw(DrawReason::ThreefoldRepetition));
     }
 
     #[test]
@@ -2878,9 +2879,9 @@ mod tests {
             for m in fen.legal_moves() {
                 let san = fen.to_san(&m);
                 let m2 = fen.parse_san(&san).unwrap_or_else(|e| {
-                    panic!("Failed to parse SAN '{}' from {}: {:?}", san, fen_str, e)
+                    panic!("Failed to parse SAN '{san}' from {fen_str}: {e:?}")
                 });
-                assert_eq!(m, m2, "Round-trip failed for '{}' from {}", san, fen_str);
+                assert_eq!(m, m2, "Round-trip failed for '{san}' from {fen_str}");
             }
         }
     }
@@ -2945,17 +2946,13 @@ mod tests {
 
     #[test]
     fn perft_position3_depth3() {
-        let fen: Position = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"
-            .parse()
-            .unwrap();
+        let fen: Position = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1".parse().unwrap();
         assert_eq!(perft(&fen, 3), 2_812);
     }
 
     #[test]
     fn perft_position3_depth4() {
-        let fen: Position = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"
-            .parse()
-            .unwrap();
+        let fen: Position = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1".parse().unwrap();
         assert_eq!(perft(&fen, 4), 43_238);
     }
 

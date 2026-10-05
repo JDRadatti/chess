@@ -8,7 +8,7 @@ use crate::system::format_timestamp;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RatingRun {
+pub(crate) struct RatingRun {
     /// Seconds since the Unix epoch.
     pub timestamp: u64,
     pub commit: String,
@@ -35,7 +35,7 @@ pub struct RatingRun {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct AgentRating {
+pub(crate) struct AgentRating {
     pub name: String,
     pub elo: f64,
     /// Half-width of the 95% interval.
@@ -48,7 +48,7 @@ pub struct AgentRating {
 /// Games between two agents, from `a`'s point of view.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Pairing {
+pub(crate) struct Pairing {
     pub a: String,
     pub b: String,
     pub wins: u32,
@@ -57,7 +57,7 @@ pub struct Pairing {
 }
 
 /// The latest run in detail, then one line per run.
-pub fn report(runs: &[RatingRun]) -> String {
+pub(crate) fn report(runs: &[RatingRun]) -> String {
     let Some(latest) = runs.last() else {
         return "no ratings yet; run `cargo run --release -- rate`\n".to_string();
     };

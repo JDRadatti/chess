@@ -8,7 +8,7 @@ const Z_95: f64 = 1.96;
 
 /// Games between players `a` and `b`, from `a`'s point of view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Results {
+pub(crate) struct Results {
     pub a: usize,
     pub b: usize,
     pub wins: u32,
@@ -17,7 +17,7 @@ pub struct Results {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Fit {
+pub(crate) struct Fit {
     pub ratings: Vec<f64>,
     /// Half-width of the 95% interval; 0 for fixed players.
     pub errors: Vec<f64>,
@@ -27,7 +27,7 @@ pub struct Fit {
 ///
 /// Every pairing gets one extra virtual draw, so a player who wins or loses every game still
 /// gets a finite rating. Returns `None` if some player isn't connected to a fixed one.
-pub fn fit(fixed: &[Option<f64>], results: &[Results]) -> Option<Fit> {
+pub(crate) fn fit(fixed: &[Option<f64>], results: &[Results]) -> Option<Fit> {
     let free: Vec<usize> = (0..fixed.len()).filter(|&i| fixed[i].is_none()).collect();
     let mut slot = vec![None; fixed.len()];
     for (k, &i) in free.iter().enumerate() {
@@ -79,7 +79,7 @@ fn derivatives(
     let mut information = vec![vec![0.0; free]; free];
     for r in results {
         let games = f64::from(r.wins + r.draws + r.losses) + 1.0;
-        let score = f64::from(r.wins) + (f64::from(r.draws) + 1.0) / 2.0;
+        let score = f64::from(r.wins) + f64::midpoint(f64::from(r.draws), 1.0);
         let expected = 1.0 / (1.0 + 10f64.powf((ratings[r.b] - ratings[r.a]) / 400.0));
         let pull = SLOPE * (score - games * expected);
         let weight = SLOPE * SLOPE * games * expected * (1.0 - expected);

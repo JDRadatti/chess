@@ -17,7 +17,7 @@ const MAX_UNPRIVILEGED_PARANOIA: i32 = 2;
 
 /// Asks for the sudo password now, so `perf` can run non-interactively later instead of
 /// prompting in the middle of a run.
-pub fn authorize_sudo() -> Result<(), String> {
+pub(crate) fn authorize_sudo() -> Result<(), String> {
     let status = Command::new("sudo")
         .arg("-v")
         .status()
@@ -31,7 +31,7 @@ pub fn authorize_sudo() -> Result<(), String> {
 
 /// Counters for one pass of `workload`, and the node count it reported. With `sudo`, call
 /// [`authorize_sudo`] first.
-pub fn measure(workload: &str, sudo: bool) -> Result<(Counters, u64), String> {
+pub(crate) fn measure(workload: &str, sudo: bool) -> Result<(Counters, u64), String> {
     if !sudo {
         let paranoia = fs::read_to_string("/proc/sys/kernel/perf_event_paranoid")
             .ok()

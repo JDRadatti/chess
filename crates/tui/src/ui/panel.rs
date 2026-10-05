@@ -21,12 +21,12 @@ const CONTROLS: [&str; 7] = [
 ];
 
 /// Status line, check warning, engine progress, move list, and controls help.
-pub struct GamePanel<'a> {
+pub(super) struct GamePanel<'a> {
     app: &'a App,
 }
 
 impl<'a> GamePanel<'a> {
-    pub fn new(app: &'a App) -> Self {
+    pub(super) fn new(app: &'a App) -> Self {
         Self { app }
     }
 }
@@ -81,7 +81,7 @@ impl Widget for GamePanel<'_> {
     }
 }
 
-pub fn status_text(app: &App) -> String {
+pub(super) fn status_text(app: &App) -> String {
     match app.game_match.game().status() {
         Status::Ongoing if app.is_human_turn() => "Your move".to_string(),
         Status::Ongoing => "Computer is thinking...".to_string(),
@@ -118,7 +118,7 @@ fn engine_lines(app: &App, engine: &EngineInfo) -> Vec<Line<'static>> {
 }
 
 /// Green for a win, red for a loss, yellow for a draw.
-pub fn status_style(app: &App) -> Style {
+pub(super) fn status_style(app: &App) -> Style {
     let color = match app.game_match.game().status() {
         Status::Ongoing => return Style::new(),
         Status::Checkmate { winner } if winner == app.human_color => Color::Green,

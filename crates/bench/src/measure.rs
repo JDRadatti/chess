@@ -12,7 +12,7 @@ use crate::suite::{PERFT_CASES, SEARCH_DEPTH, SEARCH_POSITIONS, TIMED_MILLIS, TI
 
 /// Counts the leaves of every perft case. Panics if a count is wrong: speed doesn't matter
 /// when move generation is broken.
-pub fn perft_pass() -> u64 {
+pub(crate) fn perft_pass() -> u64 {
     PERFT_CASES
         .iter()
         .map(|&(fen, depth, expected)| {
@@ -25,7 +25,7 @@ pub fn perft_pass() -> u64 {
 }
 
 /// Searches every suite position to [`SEARCH_DEPTH`] and returns the total nodes visited.
-pub fn search_pass() -> u64 {
+pub(crate) fn search_pass() -> u64 {
     SEARCH_POSITIONS
         .iter()
         .map(|fen| {
@@ -50,7 +50,7 @@ fn search_nodes(fen: &str, limits: &Limits) -> (u8, u64) {
 
 /// Runs `pass` once counting allocations, then `repeats` more times on the clock, and reports
 /// the median time. Every pass must visit the same number of nodes.
-pub fn workload(pass: fn() -> u64, repeats: usize) -> Workload {
+pub(crate) fn workload(pass: fn() -> u64, repeats: usize) -> Workload {
     let (nodes, allocs) = alloc::measure(pass);
     let mut times: Vec<f64> = (0..repeats.max(1))
         .map(|_| {
@@ -74,7 +74,7 @@ pub fn workload(pass: fn() -> u64, repeats: usize) -> Workload {
 }
 
 /// Average depth completed across [`TIMED_POSITIONS`] for each of [`TIMED_MILLIS`].
-pub fn timed_depths() -> Vec<(u64, f64)> {
+pub(crate) fn timed_depths() -> Vec<(u64, f64)> {
     TIMED_MILLIS
         .iter()
         .map(|&millis| {
@@ -95,7 +95,7 @@ fn median(values: &mut [f64]) -> f64 {
     values.sort_by(f64::total_cmp);
     let mid = values.len() / 2;
     if values.len().is_multiple_of(2) {
-        (values[mid - 1] + values[mid]) / 2.0
+        f64::midpoint(values[mid - 1], values[mid])
     } else {
         values[mid]
     }

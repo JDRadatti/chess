@@ -20,7 +20,7 @@ use game::engine::Level;
 use crate::elo;
 use crate::ratings::{AgentRating, Pairing, RatingRun};
 
-pub const DEFAULT_CLOCK: &str = "10+0.1";
+pub(crate) const DEFAULT_CLOCK: &str = "10+0.1";
 /// Roomy enough that the levels' own time per move always governs.
 const LEVEL_CLOCK: &str = "300+3";
 const QUICK_GAMES: u32 = 6;
@@ -32,7 +32,7 @@ const FULL: &str = "Full";
 /// into the game, roughly balanced.
 const BOOK: &str = "openings/noob_3moves.epd";
 
-pub struct Options {
+pub(crate) struct Options {
     pub quick: bool,
     pub games: Option<u32>,
     pub concurrency: Option<usize>,
@@ -42,7 +42,7 @@ pub struct Options {
 }
 
 /// What `run` measured, plus where the games were saved.
-pub struct Outcome {
+pub(crate) struct Outcome {
     pub run: RatingRun,
     pub pgn: PathBuf,
 }
@@ -158,7 +158,7 @@ struct PlayedGame {
     termination: String,
 }
 
-pub fn run(
+pub(crate) fn run(
     options: &Options,
     repo: &Path,
     previous: &[RatingRun],
@@ -247,14 +247,13 @@ pub fn run(
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// One game per physical core, keeping one core for fastchess and the rest of the system.
 /// Only one engine in a game thinks at a time.
 fn default_concurrency() -> usize {
-    let threads = thread::available_parallelism().map_or(2, |n| n.get());
+    let threads = thread::available_parallelism().map_or(2, std::num::NonZero::get);
     (threads / 2).saturating_sub(1).max(1)
 }
 

@@ -8,7 +8,7 @@ use crate::history::Machine;
 
 /// Commit hash, whether the tree has uncommitted changes outside `results`, and the commit
 /// subject.
-pub fn git_state(repo: &Path, results: &[PathBuf]) -> (String, bool, String) {
+pub(crate) fn git_state(repo: &Path, results: &[PathBuf]) -> (String, bool, String) {
     let git = |args: &[&str]| -> String {
         Command::new("git")
             .arg("-C")
@@ -38,7 +38,7 @@ pub fn git_state(repo: &Path, results: &[PathBuf]) -> (String, bool, String) {
     (commit, dirty, subject)
 }
 
-pub fn machine() -> Machine {
+pub(crate) fn machine() -> Machine {
     let read = |path: &str| {
         fs::read_to_string(path)
             .map(|s| s.trim().to_string())
@@ -81,7 +81,7 @@ fn on_ac_power() -> Option<bool> {
 }
 
 /// Most resident memory this process has used, in KiB.
-pub fn peak_rss_kib() -> u64 {
+pub(crate) fn peak_rss_kib() -> u64 {
     fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|status| {
@@ -94,7 +94,7 @@ pub fn peak_rss_kib() -> u64 {
 }
 
 /// `2026-10-03 23:50 UTC` for a Unix timestamp.
-pub fn format_timestamp(seconds: u64) -> String {
+pub(crate) fn format_timestamp(seconds: u64) -> String {
     let days = (seconds / 86_400) as i64;
     let minutes_today = (seconds % 86_400) / 60;
     // Howard Hinnant's days-to-civil algorithm.

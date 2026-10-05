@@ -233,7 +233,7 @@ impl App {
         }
     }
 
-    /// Set should_quit to true to quit the application.
+    /// Set `should_quit` to true to quit the application.
     pub fn quit(&mut self) {
         self.should_quit = true;
     }
@@ -464,8 +464,7 @@ fn wrap(index: usize, delta: isize, len: usize) -> usize {
 fn random_color() -> Color {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.subsec_nanos());
     if nanos.is_multiple_of(2) {
         Color::White
     } else {

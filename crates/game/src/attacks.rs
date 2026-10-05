@@ -10,15 +10,15 @@
 
 // Const helpers
 
-pub const fn sq_rank(sq: u8) -> i8 {
+pub(crate) const fn sq_rank(sq: u8) -> i8 {
     sq as i8 / 8
 }
 
-pub const fn sq_file(sq: u8) -> i8 {
+pub(crate) const fn sq_file(sq: u8) -> i8 {
     sq as i8 % 8
 }
 
-pub const fn rank_file_to_sq(rank: i8, file: i8) -> u8 {
+pub(crate) const fn rank_file_to_sq(rank: i8, file: i8) -> u8 {
     (rank * 8 + file) as u8
 }
 
@@ -34,11 +34,11 @@ const fn try_set(table: &mut [u64; 64], sq: u8, rank: i8, file: i8) {
 
 // Flip helpers (mirror vertically for black)
 
-pub const fn flip_rank_sq(sq: u8) -> u8 {
+pub(crate) const fn flip_rank_sq(sq: u8) -> u8 {
     rank_file_to_sq(7 - sq_rank(sq), sq_file(sq))
 }
 
-pub const fn flip_rank_bb(bb: u64) -> u64 {
+pub(crate) const fn flip_rank_bb(bb: u64) -> u64 {
     let mut result = 0u64;
     let mut sq = 0u8;
     while sq < 64 {
@@ -176,17 +176,17 @@ const fn build_queen_rays() -> [u64; 64] {
 
 // Precomputed tables (computed at compile time)
 
-pub const KNIGHT_ATTACKS: [u64; 64] = build_knight_attacks();
-pub const KING_ATTACKS: [u64; 64] = build_king_attacks();
-pub const PAWN_ATTACKS_WHITE: [u64; 64] = build_pawn_attacks_white();
-pub const PAWN_PUSHES_WHITE: [u64; 64] = build_pawn_pushes_white();
-pub const BISHOP_RAYS: [u64; 64] = build_bishop_rays();
-pub const ROOK_RAYS: [u64; 64] = build_rook_rays();
-pub const QUEEN_RAYS: [u64; 64] = build_queen_rays();
+pub(crate) const KNIGHT_ATTACKS: [u64; 64] = build_knight_attacks();
+pub(crate) const KING_ATTACKS: [u64; 64] = build_king_attacks();
+pub(crate) const PAWN_ATTACKS_WHITE: [u64; 64] = build_pawn_attacks_white();
+pub(crate) const PAWN_PUSHES_WHITE: [u64; 64] = build_pawn_pushes_white();
+pub(crate) const BISHOP_RAYS: [u64; 64] = build_bishop_rays();
+pub(crate) const ROOK_RAYS: [u64; 64] = build_rook_rays();
+pub(crate) const QUEEN_RAYS: [u64; 64] = build_queen_rays();
 
 // Bitboard iteration
 
-pub struct BitboardIter(u64);
+pub(crate) struct BitboardIter(u64);
 
 impl Iterator for BitboardIter {
     type Item = u8;
@@ -201,7 +201,7 @@ impl Iterator for BitboardIter {
     }
 }
 
-pub fn bitboard_iter(bb: u64) -> BitboardIter {
+pub(crate) fn bitboard_iter(bb: u64) -> BitboardIter {
     BitboardIter(bb)
 }
 
@@ -250,7 +250,7 @@ fn ray_attacks(sq: u8, d: usize, occupancy: u64) -> u64 {
     let nearest = if dr * 8 + df > 0 {
         blockers.trailing_zeros()
     } else {
-        63 - blockers.leading_zeros()
+        blockers.ilog2()
     };
     // Everything past the blocker lies on the blocker's own ray in the same direction.
     ray ^ DIRECTION_RAYS[d][nearest as usize]
@@ -258,7 +258,7 @@ fn ray_attacks(sq: u8, d: usize, occupancy: u64) -> u64 {
 
 /// Squares a slider on `sq` attacks, moving along the rays in `ray_table` (bishop, rook, or
 /// queen) and stopping at the first occupied square in each direction.
-pub fn sliding_attacks(sq: u8, ray_table: &[u64; 64], occupancy: u64) -> u64 {
+pub(crate) fn sliding_attacks(sq: u8, ray_table: &[u64; 64], occupancy: u64) -> u64 {
     let rays = ray_table[sq as usize];
     let mut attacks = 0u64;
     for (d, direction_rays) in DIRECTION_RAYS.iter().enumerate() {

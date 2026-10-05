@@ -13,7 +13,7 @@ use game::{Piece, PieceKind, engine::Level};
 /// A clickable line: its index among the popup's lines and what it does.
 type ButtonLine = (usize, Button);
 
-pub fn promotion(
+pub(super) fn promotion(
     frame: &mut Frame,
     anchor: Rect,
     choice: usize,
@@ -52,7 +52,7 @@ pub fn promotion(
 
 /// Color and opponent pickers. `color` and `level` are marked as chosen; the row at `focus`
 /// is under the keyboard cursor.
-pub fn new_game(
+pub(super) fn new_game(
     frame: &mut Frame,
     anchor: Rect,
     color: ColorChoice,
@@ -111,7 +111,7 @@ pub fn new_game(
     );
 }
 
-pub fn game_over(
+pub(super) fn game_over(
     frame: &mut Frame,
     anchor: Rect,
     app: &App,

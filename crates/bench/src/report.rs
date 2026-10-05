@@ -99,7 +99,7 @@ fn timed_depth(r: &Record, millis: u64) -> Option<f64> {
 }
 
 fn metrics() -> Vec<Metric> {
-    use Better::*;
+    use Better::{Higher, Lower, Neither};
     let mut metrics = vec![
         Metric::new("perft speed (M nodes/s)", Higher, 2, |r| {
             perft(r).map(|w| w.nodes_per_second / 1e6)
@@ -198,7 +198,7 @@ fn format_value(value: Option<f64>, decimals: usize) -> String {
 }
 
 /// The latest run against the previous one and the best so far.
-pub fn compare(records: &[Record]) -> String {
+pub(crate) fn compare(records: &[Record]) -> String {
     let style = Style {
         color: std::io::stdout().is_terminal(),
     };
@@ -278,7 +278,7 @@ pub fn compare(records: &[Record]) -> String {
 }
 
 /// One line per run, oldest first.
-pub fn history(records: &[Record]) -> String {
+pub(crate) fn history(records: &[Record]) -> String {
     let metrics = metrics();
     let mut out = format!("{:<22}{:<10}", "date", "commit");
     for (_, short) in HISTORY_COLUMNS {

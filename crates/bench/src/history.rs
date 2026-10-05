@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Record {
+pub(crate) struct Record {
     /// Seconds since the Unix epoch.
     pub timestamp: u64,
     /// Short hash of the commit that was measured.
@@ -34,7 +34,7 @@ pub struct Record {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Machine {
+pub(crate) struct Machine {
     pub cpu: String,
     pub rustc: String,
     /// CPU frequency governor and energy preference, which affect speed.
@@ -46,7 +46,7 @@ pub struct Machine {
 /// One timed workload: perft or the fixed-depth search.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Workload {
+pub(crate) struct Workload {
     pub nodes: u64,
     /// Median wall time of the timed runs.
     pub seconds: f64,
@@ -63,7 +63,7 @@ pub struct Workload {
 /// or kernel doesn't support it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Counters {
+pub(crate) struct Counters {
     pub cycles: Option<u64>,
     pub instructions: Option<u64>,
     pub cache_references: Option<u64>,
@@ -76,7 +76,7 @@ pub struct Counters {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct TimedDepth {
+pub(crate) struct TimedDepth {
     pub millis: u64,
     /// Deepest completed depth, averaged over the timed positions.
     pub average_depth: f64,
@@ -84,7 +84,7 @@ pub struct TimedDepth {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Memory {
+pub(crate) struct Memory {
     /// Most resident memory the bench process used, in KiB.
     pub peak_rss_kib: u64,
     pub position_bytes: usize,
@@ -92,7 +92,7 @@ pub struct Memory {
 }
 
 /// All records in `path`, oldest first. A missing file is an empty history.
-pub fn load<T: DeserializeOwned>(path: &Path) -> io::Result<Vec<T>> {
+pub(crate) fn load<T: DeserializeOwned>(path: &Path) -> io::Result<Vec<T>> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(vec![]),
@@ -112,7 +112,7 @@ pub fn load<T: DeserializeOwned>(path: &Path) -> io::Result<Vec<T>> {
         .collect()
 }
 
-pub fn append<T: Serialize>(path: &Path, record: &T) -> io::Result<()> {
+pub(crate) fn append<T: Serialize>(path: &Path, record: &T) -> io::Result<()> {
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{}", serde_json::to_string(record)?)
 }
