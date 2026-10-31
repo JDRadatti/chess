@@ -1,8 +1,4 @@
 #![expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "safety comments are tracked in TODO.md"
-)]
-#![expect(
     clippy::print_stdout,
     clippy::print_stderr,
     reason = "a command-line tool that reports to the terminal"

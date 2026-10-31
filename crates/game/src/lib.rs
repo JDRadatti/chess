@@ -1,7 +1,7 @@
+//! Chess rules, SAN and FEN parsing, move generation, engine. No I/O.
 #![expect(
     missing_docs,
     clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
     reason = "doc comments are tracked in TODO.md"
 )]
 #![expect(
@@ -83,10 +83,14 @@ const WHITE_MOVE: u8 = 0;
 
 // Error
 
+/// Errors from parsing FEN or SAN and playing moves.
 #[derive(Debug)]
 pub enum Error {
+    /// Indicates FEN string failed to parse or is an illegal position. `String` is the input string.
     InvalidFenString(String),
+    /// Returned when move is not legal in the `Position`, or if the input SAN does not match exactly one legal move.
     InvalidMove,
+    /// Returned by `Game::play` when the game has already ended.
     GameOver,
 }
 
@@ -103,13 +107,17 @@ impl Display for Error {
 
 // Public piece types
 
+/// A side in the game.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Color {
+    /// White, who moves first.
     White,
+    /// Black, who moves second.
     Black,
 }
 
 impl Color {
+    /// Returns the other side.
     #[must_use]
     pub const fn opponent(self) -> Self {
         match self {
@@ -127,19 +135,29 @@ impl Color {
     }
 }
 
+/// Represents each chess piece kind, independent of its color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PieceKind {
+    /// A pawn. Moves forward and captures diagonally. Promotes once it reaches the last rank.
     Pawn,
+    /// A knight. Moves in an L shape.
     Knight,
+    /// A bishop. Moves diagonally, any distance.
     Bishop,
+    /// A rook. Moves orthogonally, any distance.
     Rook,
+    /// A queen. Moves diagonally and orthogonally, any distance.
     Queen,
+    /// A king. Moves one square in any direction, or castles.
     King,
 }
 
+/// A piece on the chess board.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Piece {
+    /// The piece color.
     pub color: Color,
+    /// The piece kind.
     pub kind: PieceKind,
 }
 
@@ -179,55 +197,62 @@ impl Piece {
 
 // Game status
 
+/// Whether the game is still in progress, and if not, how it ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
+    /// The game is ongoing.
     Ongoing,
-    Checkmate { winner: Color },
+    /// Game ended by checkmate.
+    Checkmate {
+        /// The side that delivered mate.
+        winner: Color,
+    },
+    /// Game ended by draw.
     Draw(DrawReason),
 }
 
+/// Why a game ended in a draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrawReason {
+    /// The side to move has no legal moves and is not in check.
     Stalemate,
+    /// Neither side has enough material to checkmate.
     InsufficientMaterial,
     /// Applied automatically after 100 plies without a pawn move or capture.
     FiftyMoveRule,
-    /// Applied automatically on the third occurrence. Only detected by [`Game`].
+    /// Applied automatically on the third occurrence of the same position. Only detected by
+    /// [`Game`].
     ThreefoldRepetition,
 }
 
-/// A chess position: what a FEN string describes.
-///
-/// Consists of six space-separated fields:
-/// 1. Piece placement. Slash separated list of ranks, tarting with rank 8. Pieces are represented
-///    as p=pawn, r=rook, q=queen, k=king, n=knight, b=bishop. Capital letters represent white pieces, and
-///    lowercase represent black pieces. (i.e.
-/// 2. Active color. b (1) for black, w (0) for white.
-/// 3. Castling rights. K for white kingside, Q for white queenside, k for black kingside, q for
-///    black queenside. Hyphen if neither side can castle.
-/// 4. En Passant target square. The square "behind" a pawn that just moved two squares. Hyphen if
-///    no valid en passant square exists.
-/// 5. Halfmoves. Number of plies since the last pawn advance or piece capture. Used to enforce
-///    the 50 move rule (100 plies).
-/// 6. Fullmoves. Starts at 1 and increments every black move.
-///
-/// # Representation
-///
-/// Position[0..=31] = board squares.
-///     Each square takes up 4 bits (1 for piece color, 3 for piece type, 0000 = empty)
-/// Position[32..=35] =
-///     Byte 32:     [castling:4][has_en_passant:1][`en_passant_file:3`]
-///     Byte 33:     [`active_player:1`][halfmove_cnt:7]
-///     Byte 34-35:  [`fullmove_cnt:16`] (little endian)
+/// A chess position: piece placement, side to move, castling rights, en passant square, and
+/// the halfmove and fullmove counters. Parse one from FEN with `str::parse`; write one with
+/// [`Position::to_fen`].
 #[derive(Debug, Clone, Copy)]
-pub struct Position([u8; 36]);
+pub struct Position(
+    /// Packed into 36 bytes.
+    ///
+    /// Bytes 0..=31: the board, two squares per byte. Square index is `rank * 8 + file`
+    /// (a1 = 0, h8 = 63). Even squares use the low nibble, odd squares the high nibble.
+    /// A nibble is `[color:1][type:3]`, as in the `WHITE_*` and `BLACK_*` constants; 0 is empty.
+    ///
+    /// Byte 32: `[castling:4][has_en_passant:1][en_passant_file:3]`. Castling uses the `*_CASTLE` masks.
+    /// Byte 33: `[active_player:1][halfmove_cnt:7]`. The clock saturates at 127.
+    /// Bytes 34..=35: `fullmove_cnt` as a little-endian `u16`.
+    [u8; 36],
+);
 
 impl Position {
+    /// The standard starting position.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Plays `m` if it is legal in this position.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidMove`] if `m` is not legal in this position.
     pub fn apply_move(&mut self, m: Move) -> Result<(), Error> {
         if !self.legal_moves_from(Square(m.src())).contains(&m) {
             return Err(Error::InvalidMove);
@@ -241,6 +266,7 @@ impl Position {
         Piece::from_bits(self.square_bits(sq))
     }
 
+    /// The active player.
     pub fn side_to_move(&self) -> Color {
         Color::from_bit(self.active_player_bit())
     }
@@ -280,6 +306,7 @@ impl Position {
         Status::Ongoing
     }
 
+    /// Returns true if the active player has any legal moves.
     fn has_legal_move(&self) -> bool {
         !self.legal_moves().is_empty()
     }
@@ -328,6 +355,7 @@ impl Position {
         key
     }
 
+    /// This position as a FEN string.
     pub fn to_fen(&self) -> String {
         let mut result = String::new();
 
@@ -425,6 +453,12 @@ impl Position {
         result
     }
 
+    /// Parses SAN such as `Nf3`, `exd5`, or `O-O` into a legal [`Move`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidMove`] if `san` does not parse, matches no legal move or more
+    /// than one, or has a wrong `+` or `#` suffix.
     pub fn parse_san(&self, san: &str) -> Result<Move, Error> {
         let san = san.trim();
         if san.is_empty() {
@@ -686,6 +720,8 @@ impl Position {
         }
     }
 
+    /// Converts a [`Move`] to a SAN string. If the move is illegal in this position, the output
+    /// will be incorrect.
     pub fn to_san(&self, m: &Move) -> String {
         let mut result = String::new();
 
@@ -1765,17 +1801,21 @@ pub struct Square(pub u8);
 /// A game in progress: the current position plus the history needed for repetition.
 #[derive(Debug, Clone)]
 pub struct Game {
+    /// The current position.
     position: Position,
+    /// Moves played since the starting position.
     moves: Vec<Move>,
     /// Repetition key of every position reached, including the starting one.
     history: Vec<[u8; 34]>,
 }
 
 impl Game {
+    /// New game from the default starting position.
     pub fn new() -> Self {
         Self::from_position(Position::default())
     }
 
+    /// New game from the given position.
     pub fn from_position(position: Position) -> Self {
         Self {
             position,
@@ -1784,6 +1824,7 @@ impl Game {
         }
     }
 
+    /// The current position.
     pub fn position(&self) -> &Position {
         &self.position
     }
@@ -1799,6 +1840,11 @@ impl Game {
     }
 
     /// Plays `m` if the game is still ongoing and the move is legal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GameOver`] if the game already ended and [`Error::InvalidMove`] if `m` is
+    /// illegal.
     pub fn play(&mut self, m: Move) -> Result<(), Error> {
         if self.status() != Status::Ongoing {
             return Err(Error::GameOver);
@@ -1809,16 +1855,15 @@ impl Game {
         Ok(())
     }
 
+    /// Like [`Position::status`], but also detects threefold repetition from the game's
+    /// history.
     pub fn status(&self) -> Status {
         let status = self.position.status();
         if status != Status::Ongoing {
             return status;
         }
-        let current = self
-            .history
-            .last()
-            .expect("history always has the start position");
-        if self.history.iter().filter(|key| *key == current).count() >= 3 {
+        let current = self.position.repetition_key();
+        if self.history.iter().filter(|key| **key == current).count() >= 3 {
             return Status::Draw(DrawReason::ThreefoldRepetition);
         }
         Status::Ongoing

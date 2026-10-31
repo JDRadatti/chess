@@ -38,11 +38,15 @@ fn record_resize(delta: i64) {
     PEAK.fetch_max(live, Relaxed);
 }
 
+// SAFETY: Every method forwards to `System` with the caller's arguments, so `System`'s
+// guarantees hold. The counting never allocates (atomics and a const thread-local) and
+// never panics, so it cannot recurse into the allocator or unwind.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if counting() {
             record_allocation(layout.size());
         }
+        // SAFETY: The caller upholds `GlobalAlloc::alloc`'s contract for `layout`.
         unsafe { System.alloc(layout) }
     }
 
@@ -50,6 +54,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         if counting() {
             record_allocation(layout.size());
         }
+        // SAFETY: The caller upholds `GlobalAlloc::alloc_zeroed`'s contract for `layout`.
         unsafe { System.alloc_zeroed(layout) }
     }
 
@@ -57,6 +62,8 @@ unsafe impl GlobalAlloc for CountingAllocator {
         if counting() {
             record_resize(-signed(layout.size()));
         }
+        // SAFETY: `ptr` was allocated by this allocator with `layout`, and this allocator gets all
+        // its memory from `System`.
         unsafe { System.dealloc(ptr, layout) }
     }
 
@@ -66,6 +73,8 @@ unsafe impl GlobalAlloc for CountingAllocator {
             BYTES.fetch_add(new_size as u64, Relaxed);
             record_resize(signed(new_size) - signed(layout.size()));
         }
+        // SAFETY: `ptr` was allocated by this allocator with `layout`, and this allocator gets all
+        // its memory from `System`. The caller upholds the contract for `new_size`.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
